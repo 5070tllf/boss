@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>作者控制台</title>
+    <title>作者后台</title>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getDatabase, ref, push, onChildAdded, onValue, query, limitToLast, get, set, update, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
@@ -14,7 +14,7 @@
 
         let currentGroupId = ""; 
         let currentView = "groups";
-        let actionTargetName = ""; // 暂存要操作的玩家名字
+        let actionTargetName = ""; 
         const chatContent = document.getElementById('chatContent');
 
         window.onload = function() { 
@@ -94,7 +94,6 @@
             document.getElementById('userManageContent').innerHTML = `
                 <div style="background:#222; padding:15px; border-radius:8px; margin-bottom:15px;">
                     <p style="margin-bottom:10px; font-size:13px; word-break: break-all;">设备码: <span style="color:#f1c40f;">${dId}</span></p>
-                    
                     <button onclick="changeUserName('${uname}')" style="width:100%; padding:12px; background:#9b59b6; color:#fff; border:none; border-radius:6px; margin-bottom:10px; font-weight:bold; cursor:pointer;">修改该用户名字</button>
                     <button onclick="changePass('${uname}')" style="width:100%; padding:12px; background:#007aff; color:#fff; border:none; border-radius:6px; margin-bottom:10px; font-weight:bold; cursor:pointer;">修改该用户密码</button>
                     <button onclick="deleteUser('${uname}')" style="width:100%; padding:12px; background:#e74c3c; color:#fff; border:none; border-radius:6px; margin-bottom:10px; font-weight:bold; cursor:pointer;">强制注销此账号</button>
@@ -187,50 +186,79 @@
         }
         window.handleEnter = function(e) { if (e.key === 'Enter') sendMsg(); }
 
-        // 🌟 核心：渲染消息，绑定点击操作
         function addMsgUI(sender, text) {
             const isSys = (sender === "📢 系统公告" || sender === "📢 系统提示");
             const isAdmin = (sender === "👑 作者(隐身)" || sender === "💬 作者(普通)");
             const div = document.createElement('div');
             div.className = `msg theirs`;
 
-            // 判断是否允许点击操作（系统号和作者号不允许操作）
             const canManage = (!isSys && !isAdmin);
-
             if (canManage) {
                 div.style.cursor = "pointer";
                 div.onclick = () => showActionModal(sender);
             }
 
             let bubbleClass = sender === "📢 系统公告" ? "bubble-sys" : (sender === "👑 作者(隐身)" ? "bubble-admin" : "");
-
             div.innerHTML = `<div class="msg-name">${sender}</div><div class="msg-text ${bubbleClass}">${text}</div>`;
             chatContent.appendChild(div);
             chatContent.scrollTop = chatContent.scrollHeight;
         }
 
-        // 弹窗操作
         window.showActionModal = function(targetName) {
             actionTargetName = targetName;
             document.getElementById('modalTargetName').innerText = targetName;
+            
+            // 查询是否已被禁言，自动切换按钮状态
+            get(ref(db, `groups/${currentGroupId}/muted/${targetName}`)).then(muteSnap => {
+                const btnMute = document.getElementById('btnMute');
+                if (muteSnap.exists() && muteSnap.val() > Date.now()) {
+                    btnMute.innerText = '解除禁言';
+                    btnMute.style.background = '#07c160';
+                    btnMute.onclick = unmuteTarget;
+                } else {
+                    btnMute.innerText = '禁言该用户';
+                    btnMute.style.background = '#f39c12';
+                    btnMute.onclick = muteTarget;
+                }
+            });
             document.getElementById('actionModal').style.display = 'flex';
         }
-        window.closeActionModal = function() {
-            document.getElementById('actionModal').style.display = 'none';
+        window.closeActionModal = function() { document.getElementById('actionModal').style.display = 'none'; }
+
+        // 🌟 科学时间解析引擎（同步作者端）
+        window.parseTimeInput = function(input) {
+            if (!input) return 0;
+            input = input.trim().toLowerCase();
+            
+            if (input.includes('e+') || input.includes('e')) {
+                const numPart = parseFloat(input.replace(/[^0-9.e+]/g, ''));
+                if (isNaN(numPart)) return 3153600000000; 
+                if (numPart > 1e+10) return 3153600000000; // 极大值当永久
+            }
+
+            let num = parseFloat(input);
+            if (isNaN(num)) num = 0;
+            
+            if (input.includes('m')) return num * 60 * 1000;
+            if (input.includes('h')) return num * 60 * 60 * 1000;
+            if (input.includes('d')) return num * 24 * 60 * 60 * 1000;
+            return num * 60 * 1000; 
         }
 
-        // 作者强制禁言
         window.muteTarget = function() {
-            const time = prompt(`禁言【${actionTargetName}】多少分钟？(99999=永久)`);
-            if(!time || isNaN(time)) return;
-            const muteUntil = Date.now() + (parseInt(time) * 60000);
+            const timeStr = prompt(`禁言【${actionTargetName}】多久？\n支持格式：1m, 1h, 1d\n可输入无限大，例如: 1e+99d (相当于永久)`);
+            if(!timeStr) return;
+            
+            const ms = parseTimeInput(timeStr);
+            if (ms === 0) return alert("时间格式错误！");
+
+            const muteUntil = Date.now() + ms;
             set(ref(db, `groups/${currentGroupId}/muted/${actionTargetName}`), muteUntil).then(() => {
-                push(ref(db, `groups/${currentGroupId}/messages`), { sender: "📢 系统公告", text: `${actionTargetName} 已被作者禁言 ${time} 分钟`, time: Date.now() });
+                push(ref(db, `groups/${currentGroupId}/messages`), { sender: "📢 系统公告", text: `${actionTargetName} 已被作者禁言 ${timeStr}`, time: Date.now() });
                 closeActionModal();
             });
         }
 
-        // 🌟 核心修复：作者强制解除禁言
         window.unmuteTarget = function() {
             remove(ref(db, `groups/${currentGroupId}/muted/${actionTargetName}`)).then(() => {
                 push(ref(db, `groups/${currentGroupId}/messages`), { sender: "📢 系统公告", text: `${actionTargetName} 已被作者解除禁言`, time: Date.now() });
@@ -239,7 +267,6 @@
             });
         }
 
-        // 作者强制踢人
         window.kickTarget = function() {
             if(!confirm(`⚠️ 确定将【${actionTargetName}】踢出群聊吗？`)) return;
             set(ref(db, `groups/${currentGroupId}/kicked/${actionTargetName}`), true).then(() => {
@@ -315,7 +342,7 @@
         .msg { display: flex; flex-direction: column; max-width: 80%; align-self: flex-start;}
         .msg-name { font-size: 12px; color: #888; margin-bottom: 5px; }
         .msg-text { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; word-break: break-all; background: #222; color: #fff;}
-        .msg.theirs .msg-text:hover { background: #333; } /* 鼠标悬停提示可点击 */
+        .msg.theirs .msg-text:hover { background: #333; }
         .bubble-sys { background: linear-gradient(135deg, #ffd700, #ff8c00) !important; color: #000 !important; font-weight: 900; }
         .bubble-admin { background: linear-gradient(135deg, #ff3b30, #ff007f) !important; color: #fff !important; font-weight: 900; box-shadow: 0 0 10px rgba(255, 0, 127, 0.5);}
         .input-area { padding: 10px; background: #111; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 8px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); flex-shrink: 0;}
@@ -327,7 +354,6 @@
         #usersView { display: none; flex-direction: column; padding: 15px; flex: 1; overflow-y: auto;}
         #userManageTitle { font-size: 18px; color: #f1c40f; margin-bottom: 20px; }
 
-        /* 操作弹窗 UI */
         #actionModal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 9999; }
         .action-box { background: #222; width: 80%; max-width: 300px; padding: 20px; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; border: 1px solid #444;}
         .action-box h3 { text-align: center; margin-bottom: 5px; color: #fff; font-size: 16px;}
@@ -372,12 +398,11 @@
         <div id="usersView"><h1 id="userManageTitle">正在管理</h1><div id="userManageContent"></div></div>
     </div>
 
-    <!-- 全局操作弹窗 -->
+    <!-- 操作弹窗 -->
     <div id="actionModal">
         <div class="action-box">
             <h3>对 <span id="modalTargetName" style="color:#ff3b30;"></span> 操作</h3>
-            <button onclick="muteTarget()" style="background: #f39c12; color: white;">禁言该用户</button>
-            <button onclick="unmuteTarget()" style="background: #07c160; color: white;">解除禁言</button>
+            <button id="btnMute" style="background: #f39c12; color: white;">禁言该用户</button>
             <button onclick="kickTarget()" style="background: #e74c3c; color: white;">踢出群聊</button>
             <button class="btn-close" onclick="closeActionModal()">取消</button>
         </div>
