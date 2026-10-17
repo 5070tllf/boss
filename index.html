@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>系统作者后台</title>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getDatabase, ref, push, onChildAdded, remove, query, limitToLast, set } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+        const firebaseConfig = { databaseURL: "https://class3b-5b39b-default-rtdb.asia-southeast1.firebasedatabase.app" };
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        const myName = "作者(隐身中)"; 
+        let bannedUsers = [];
+        let currentGroupId = ""; 
+        let chatRef = null;
+
+        const chatContent = document.getElementById('chatContent');
+        const msgInput = document.getElementById('msgInput');
+
+        window.onload = function() { listenBans(); }
+
+        function listenBans() {
+            const banRef = ref(db, 'banned');
+            onChildAdded(banRef, (snapshot) => {
+                const bannedName = snapshot.val();
+                if (!bannedUsers.includes(bannedName)) {
+                    bannedUsers.push(bannedName);
+                    updateUserList();
+                }
+            });
+        }
+
+        window.spyGroup = function() {
+            const groupId = document.getElementById('groupInput').value.trim();
+            if (!groupId) return alert("请输入要偷窥的群号！");
+            currentGroupId = groupId;
+            chatContent.innerHTML = `<div style="text-align:center; color:#888; font-size:12px;">已隐身潜入群 [${groupId}]，他们看不见你...</div>`;
+            chatRef = query(ref(db, `groups/${groupId}`), limitToLast(50));
+            onChildAdded(chatRef, (snapshot) => {
+                const data = snapshot.val();
+                if(currentGroupId === groupId) {
+                    addMessageToUI(data.sender, data.text, snapshot.key);
+                }
+            });
+        }
+
+        window.sendMsg = function() {
+            const text = msgInput.value.trim();
+            if (!text || !currentGroupId) return;
+            push(ref(db, `groups/${currentGroupId}`), { sender: "📢 系统管理员", text: text, time: Date.now() });
+            msgInput.value = '';
+        }
+
+        window.handleEnter = function(e) { if (e.key === 'Enter') sendMsg(); }
+
+        function addMessageToUI(sender, text, key) {
+            const isMe = (sender === "📢 系统管理员");
+            const div = document.createElement('div');
+            div.className = `msg ${isMe ? 'mine' : 'theirs'}`;
+            
+            const isUserBanned = bannedUsers.includes(sender);
+            const banBadge = isUserBanned ? '<span style="color:#e74c3c; font-size:12px;">(已封禁)</span>' : '';
+            const banBtn = (!isMe && !isUserBanned) ? `<span style="color:#ff3b30; font-size:12px; margin-left:10px; cursor:pointer;" onclick="banUser('${sender}')">[封禁]</span>` : '';
+            const deleteBtn = (!isMe) ? `<span style="color:#888; font-size:12px; margin-left:10px; cursor:pointer;" onclick="deleteMsg('${key}')">[删除]</span>` : '';
+
+            div.innerHTML = `
+                <div class="msg-name">${!isMe ? sender + banBadge + banBtn + deleteBtn : '系统公告'}</div>
+                <div class="msg-text">${text}</div>
+            `;
+            chatContent.appendChild(div);
+            chatContent.scrollTop = chatContent.scrollHeight;
+        }
+
+        window.deleteMsg = function(key) {
+            if(!currentGroupId) return;
+            remove(ref(db, `groups/${currentGroupId}/` + key)).then(() => { alert("已删除该消息"); });
+        }
+
+        window.banUser = function(name) {
+            if(confirm(`确定要全网封杀【${name}】吗？他将无法在任何群发言！`)) {
+                set(ref(db, 'banned/' + name), name).then(() => { alert(`已将 ${name} 永久禁言！`); });
+            }
+        }
+
+        function updateUserList() {
+            document.getElementById('banList').innerText = bannedUsers.length === 0 ? "暂无"同学的 : bannedUsers.join(", ");
+        }
+    </script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, sans-serif; }
+        body { background: #111; height: 100vh; display: flex; flex-direction: column; color: #fff; overflow: hidden; }
+        .header { background: #222; padding: 15px 20px; border-bottom: 1px solid #333; }
+        .header h1 { font-size: 16px; margin-bottom: 10px; color: #ff3b30; }
+        .input-group { display: flex; gap: 10px; }
+        .input-group input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #444; background: #000; color: #fff; outline: none;}
+        .input-group button { background: #ff3b30; color: white; border: none; padding: 0 15px; border-radius: 8px; font-weight: bold; cursor: pointer;}
+        .ban-info { background: #330000; color: #ff9999; font-size: 12px; padding: 8px 20px; }
+        .chat-content { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .msg { display: flex; flex-direction: column; max-width: 80%; }
+        .msg.mine { align-self: flex-end; align-items: flex-end; }
+        .msg.theirs { align-self: flex-start; align-items: flex-start; }
+        .msg-name { font-size: 12px; color: #888; margin-bottom: 5px; display: flex; align-items: center; }
+        .msg-text { padding: 12px 16px; border-radius: 12px; font-size: 16px; line-height: 1.4; word-break: break-all;}
+        .msg.mine .msg-text { background: #ff3b30; color: #fff; }
+        .msg.theirs .msg-text { background: #333; color: #fff; }
+        .input-area { padding: 15px; background: #222; border-top: 1px solid #333; display: flex; gap: 10px; }
+        .input-area input { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #444; background: #000; color: #fff; outline: none;}
+        .input-area button { background: #ff3b30; color: white; border: none; padding: 0 20px; border-radius: 8px; font-weight: bold; cursor: pointer;}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👑 作者上帝控制台 (隐身模式)</h1>
+        <div class="input-group">
+            <input type="text" id="groupInput" placeholder="输入他们建的群号 (如: 1234)">
+            <button onclick="spyGroup()">隐身潜入</button>
+        </div>
+    </div>
+    <div class="ban-info">全网封杀名单：<span id="banList">暂无</span></div>
+    <div class="chat-content" id="chatContent">
+        <div style="text-align:center; color:#666; margin-top:50px;">等待输入群号潜入...</div>
+    </div>
+    <div class="input-area">
+        <input type="text" id="msgInput" placeholder="以系统管理员身份强制发公告..." onkeypress="handleEnter(event)">
+        <button onclick="sendMsg()">发布</button>
+    </div>
+</body>
+</html>
