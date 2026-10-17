@@ -14,7 +14,10 @@
 
         let currentGroupId = ""; 
         const chatContent = document.getElementById('chatContent');
-        const myAdminName = "👑 作者";
+        
+        // 用于长按判断的变量
+        let pressTimer = null;
+        let isLongPress = false;
 
         window.onload = function() { listenAllGroups(); }
 
@@ -28,13 +31,65 @@
                         const div = document.createElement('div');
                         div.className = 'group-item';
                         div.innerHTML = `💬 ${data[gid].name || '无群名'}<br><span style="font-size:10px;color:#888;">ID: ${gid}</span>`;
-                        div.onclick = () => spyGroup(gid);
+                        
+                        // ======= 长按删除逻辑 开始 =======
+                        // 1. 鼠标按下 / 手指触摸
+                        const startPress = (e) => {
+                            isLongPress = false;
+                            pressTimer = setTimeout(() => {
+                                isLongPress = true;
+                                // 震动反馈（如果设备支持）
+                                if (navigator.vibrate) navigator.vibrate(50); 
+                                deleteGroup(gid, data[gid].name);
+                            }, 800); // 按住 0.8 秒触发
+                        };
+
+                        // 2. 鼠标松开 / 手指离开
+                        const cancelPress = () => {
+                            clearTimeout(pressTimer);
+                        };
+
+                        // 3. 点击事件
+                        div.onclick = (e) => {
+                            if (isLongPress) {
+                                // 如果是长按，阻止后续的点击进入群聊事件
+                                e.preventDefault();
+                                e.stopPropagation();
+                                isLongPress = false;
+                                return;
+                            }
+                            spyGroup(gid);
+                        };
+
+                        div.addEventListener('mousedown', startPress);
+                        div.addEventListener('touchstart', startPress, {passive: true});
+                        
+                        div.addEventListener('mouseup', cancelPress);
+                        div.addEventListener('mouseleave', cancelPress);
+                        div.addEventListener('touchend', cancelPress);
+                        // ======= 长按删除逻辑 结束 =======
+
                         listEl.appendChild(div);
                     }
                 } else {
                     listEl.innerHTML = '<div style="color:#555; font-size:12px; text-align:center;">全网暂无群聊</div>';
                 }
             });
+        }
+
+        // 删除单个群聊的核心功能
+        window.deleteGroup = function(gid, gname) {
+            if(confirm(`⚠️ 警告：确定要销毁群聊 [${gname || gid}] 吗？\n该操作会清空群内所有消息，玩家将被踢出！`)) {
+                // 先在数据库里发一条全局广播，让在线玩家强制退出
+                set(ref(db, 'group_info/' + gid), null); // 删资料
+                remove(ref(db, 'groups/' + gid)).then(() => { // 删聊天记录
+                    alert(`群聊 [${gname || gid}] 已被彻底销毁！`);
+                    if (currentGroupId === gid) {
+                        currentGroupId = "";
+                        chatContent.innerHTML = `<div style="text-align:center; color:#666; margin-top:50px;">该群已被你销毁，请选择其他群...</div>`;
+                    }
+                });
+            }
         }
 
         window.spyGroup = function(gid) {
@@ -54,7 +109,6 @@
             });
         }
 
-        // 核心：三种模式的发送
         window.sendMsg = function() {
             const input = document.getElementById('msgInput');
             const text = input.value.trim();
@@ -65,8 +119,8 @@
             let senderName = "";
 
             if (mode === "sys") senderName = "📢 系统公告";
-            else if (mode === "admin") senderName = "👑 作者(隐身)"; // 假装是普通玩家，但带有红色气泡
-            else senderName = "💬 作者(普通)"; // 普通气泡
+            else if (mode === "admin") senderName = "👑 作者";
+            else senderName = "💬 作者";
 
             push(ref(db, `groups/${currentGroupId}/messages`), { sender: senderName, text: text, time: Date.now() });
             input.value = '';
@@ -75,11 +129,11 @@
 
         function addMsgUI(sender, text) {
             const isSys = (sender === "📢 系统公告");
-            const isAdmin = (sender === "👑 作者(隐身)");
+            const isAdmin = (sender === "👑 作者");
             const div = document.createElement('div');
             div.className = `msg ${isSys || isAdmin ? 'theirs' : 'theirs'}`;
             
-            let muteBtn = (!isSys && !isAdmin && sender !== "💬 作者(普通)") ? `<span style="color:#f39c12; font-size:12px; margin-left:10px; cursor:pointer;" onclick="muteUser('${sender}')">[禁言]</span>` : '';
+            let muteBtn = (!isSys && !isAdmin && sender !== "💬 作者") ? `<span style="color:#f39c12; font-size:12px; margin-left:10px; cursor:pointer;" onclick="muteUser('${sender}')">[禁言]</span>` : '';
             
             let bubbleClass = "";
             if (isSys) bubbleClass = "bubble-sys";
@@ -90,7 +144,6 @@
             chatContent.scrollTop = chatContent.scrollHeight;
         }
 
-        // 禁言玩家并在群里发提示
         window.muteUser = function(name) {
             if(!currentGroupId) return;
             const time = prompt(`禁言【${name}】多少分钟？(99999=永久)`);
@@ -98,16 +151,13 @@
 
             const muteUntil = Date.now() + (parseInt(time) * 60000);
             set(ref(db, `groups/${currentGroupId}/muted/${name}`), muteUntil).then(() => {
-                // 发一条系统提示
                 push(ref(db, `groups/${currentGroupId}/messages`), { sender: "📢 系统公告", text: `${name} 已被管理员禁言 ${time} 分钟`, time: Date.now() });
                 alert(`已禁言 ${name}！`);
             });
         }
 
-        // ☢️ 毁灭所有群
         window.clearAllGroups = function() {
             if(confirm("☢️ 确定要毁灭全网所有群吗？所有玩家将被踢出！")) {
-                // 在全局广播发送信号
                 set(ref(db, 'system_broadcast'), { action: "delete_all_groups", time: Date.now() });
                 remove(ref(db, 'groups')).then(()=>{ 
                     remove(ref(db, 'group_info')).then(() => {
@@ -118,36 +168,39 @@
             }
         }
 
-        // ☢️ 抹除所有账号
         window.clearAllUsers = function() {
             if(confirm("☢️ 确定要抹除所有账号吗？所有玩家将被强制注销！")) {
-                // 在全局广播发送信号
                 set(ref(db, 'system_broadcast'), { action: "delete_all_users", time: Date.now() });
                 remove(ref(db, 'users')).then(()=>{ alert("所有账号已抹除！"); });
             }
         }
     </script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, sans-serif; }
-        body { background: #050505; height: 100vh; height: 100dvh; display: flex; color: #fff; overflow: hidden; }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, sans-serif; -webkit-touch-callout: none; /* 防止长按出现系统菜单 */ }
+        body { background: #050505; height: 100vh; height: 100dvh; display: flex; color: #fff; overflow: hidden; user-select: none; }
         .sidebar { width: 35%; max-width: 300px; background: #111; border-right: 1px solid #333; display: flex; flex-direction: column; }
         .sidebar-header { padding: 15px; border-bottom: 1px solid #333; }
         .sidebar-header h1 { font-size: 16px; color: #ff3b30; margin-bottom: 10px; text-align: center;}
         .danger-zone { display: flex; flex-direction: column; gap: 8px;}
         .danger-btn { background: #330000; color: #ff3b30; border: 1px solid #ff3b30; padding: 10px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size:12px;}
+        
         .group-list { flex: 1; overflow-y: auto; padding: 10px; }
-        .group-item { background: #222; padding: 12px; margin-bottom: 8px; border-radius: 8px; cursor: pointer; border-left: 3px solid #007aff; font-size: 13px;}
+        .group-item { 
+            background: #222; padding: 12px; margin-bottom: 8px; border-radius: 8px; 
+            cursor: pointer; border-left: 3px solid #007aff; font-size: 13px;
+            transition: transform 0.2s;
+        }
+        .group-item:active { transform: scale(0.96); background: #2a2a2a; }
+        
         .main-area { flex: 1; display: flex; flex-direction: column; background: #0a0a0a; }
         .chat-header { padding: 15px; background: #111; border-bottom: 1px solid #333; font-size: 14px;}
         .chat-content { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
         .msg { display: flex; flex-direction: column; max-width: 80%; align-self: flex-start;}
         .msg-name { font-size: 12px; color: #888; margin-bottom: 5px; }
         .msg-text { padding: 12px 16px; border-radius: 12px; font-size: 15px; line-height: 1.4; word-break: break-all; background: #222; color: #fff;}
-        
-        /* 作者三种特效 */
         .bubble-sys { background: linear-gradient(135deg, #ffd700, #ff8c00) !important; color: #000 !important; font-weight: 900; box-shadow: 0 0 10px rgba(255, 215, 0, 0.5);}
         .bubble-admin { background: linear-gradient(135deg, #ff3b30, #ff007f) !important; color: #fff !important; font-weight: 900; box-shadow: 0 0 10px rgba(255, 0, 127, 0.5);}
-
+        
         .input-area { padding: 10px 15px; background: #111; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
         .mode-select { display: flex; gap: 15px; font-size: 12px; color: #aaa; }
         .mode-select label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
@@ -160,6 +213,7 @@
     <div class="sidebar">
         <div class="sidebar-header">
             <h1>👑 终极上帝面板</h1>
+            <div style="text-align: center; font-size: 11px; color: #888; margin-bottom: 10px;">💡 提示：长按左侧群名可强制销毁</div>
             <div class="danger-zone">
                 <button class="danger-btn" onclick="clearAllGroups()">☢️ 强制销毁全网群聊</button>
                 <button class="danger-btn" onclick="clearAllUsers()">☢️ 强制注销所有账号</button>
@@ -173,11 +227,10 @@
             <div style="text-align:center; color:#666; margin-top:50px;">点击左侧群聊隐身潜入...</div>
         </div>
         <div class="input-area">
-            <!-- 三种模式切换 -->
             <div class="mode-select">
                 <label><input type="radio" name="sendMode" value="sys" checked> 📢 系统公告</label>
                 <label><input type="radio" name="sendMode" value="admin"> 👑 隐身红字</label>
-                <label><input type="radio" name="sendMode" value="normal"> 💬 普通聊天</label>
+                <label><input type="radio" name="sendMode" value="normal"> 💬 聊天</label>
             </div>
             <div class="input-row">
                 <input type="text" id="msgInput" placeholder="输入内容..." onkeypress="handleEnter(event)">
