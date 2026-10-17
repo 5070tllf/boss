@@ -29,22 +29,69 @@
                 if (snapshot.exists()) {
                     const data = snapshot.val();
                     for (let gid in data) {
+                        const wrapper = document.createElement('div');
+                        wrapper.className = 'swipe-wrapper';
+
+                        const deleteBtn = document.createElement('div');
+                        deleteBtn.className = 'swipe-delete-btn';
+                        deleteBtn.innerText = '删除';
+                        deleteBtn.onclick = function(e) {
+                            e.stopPropagation();
+                            deleteGroupBySwipe(gid, data[gid].name);
+                        };
+
                         const div = document.createElement('div');
-                        div.className = 'list-item';
+                        div.className = 'list-item swipe-content';
                         div.innerHTML = `💬 ${data[gid].name || '无群名'} <br><span style="font-size:10px;color:#888;">ID: ${gid} | 群主: ${data[gid].creator}</span>`;
-                        // 强制绑定点击事件，确保无反应 Bug 被消灭
+                        
                         div.onclick = function() {
                             currentView = "groups";
                             document.getElementById('usersView').style.display = 'none';
                             document.getElementById('chatView').style.display = 'flex';
                             spyGroup(gid);
                         };
-                        listEl.appendChild(div);
+
+                        bindSwipe(div);
+
+                        wrapper.appendChild(deleteBtn);
+                        wrapper.appendChild(div);
+                        listEl.appendChild(wrapper);
                     }
                 } else {
                     listEl.innerHTML = '<div style="color:#555; text-align:center; padding:20px;">全网暂无群聊</div>';
                 }
             });
+        }
+
+        function bindSwipe(element) {
+            let startX = 0, currentX = 0, isDragging = false;
+            element.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; isDragging = true; element.style.transition = 'none'; }, {passive: true});
+            element.addEventListener('touchmove', (e) => {
+                if (!isDragging) return;
+                currentX = e.touches[0].clientX;
+                let diff = currentX - startX;
+                if (diff > 0 && diff < 80) element.style.transform = `translateX(${diff}px)`;
+                else if (diff >= 80) element.style.transform = `translateX(80px)`;
+            }, {passive: true});
+            element.addEventListener('touchend', () => {
+                isDragging = false;
+                element.style.transition = 'transform 0.2s ease';
+                let matrix = new WebKitCSSMatrix(window.getComputedStyle(element).transform);
+                element.style.transform = matrix.m41 > 40 ? `translateX(80px)` : `translateX(0)`;
+            });
+        }
+
+        window.deleteGroupBySwipe = function(gid, gname) {
+            if(confirm(`⚠️ 警告：确定要强制销毁群聊 [${gname || gid}] 吗？\n所有聊天记录将被抹除！`)) {
+                set(ref(db, 'group_info/' + gid), null);
+                remove(ref(db, 'groups/' + gid)).then(() => {
+                    alert(`群聊已彻底销毁！`);
+                    if(currentGroupId === gid) {
+                        currentGroupId = "";
+                        chatContent.innerHTML = '<div style="text-align:center; color:#666; margin-top:50px;">该群已被你销毁...</div>';
+                    }
+                });
+            }
         }
 
         // ============ 左侧雷达：注册用户列表 ============
@@ -69,21 +116,23 @@
             });
         }
 
-        // ============ 管理单个用户 ============
         window.manageUser = function(uname, userData) {
             currentView = "users";
             document.getElementById('chatView').style.display = 'none';
             document.getElementById('usersView').style.display = 'flex';
             
             const dId = userData.deviceId || "无记录";
-            
             document.getElementById('userManageTitle').innerText = `管理: ${uname}`;
             document.getElementById('userManageContent').innerHTML = `
                 <div style="background:#222; padding:15px; border-radius:8px; margin-bottom:15px;">
                     <p style="margin-bottom:10px; font-size:13px; word-break: break-all;">设备码: <span style="color:#f1c40f;">${dId}</span></p>
                     <button onclick="changePass('${uname}')" style="width:100%; padding:12px; background:#007aff; color:#fff; border:none; border-radius:6px; margin-bottom:10px; font-weight:bold; cursor:pointer;">修改该用户密码</button>
                     <button onclick="deleteUser('${uname}')" style="width:100%; padding:12px; background:#e74c3c; color:#fff; border:none; border-radius:6px; margin-bottom:10px; font-weight:bold; cursor:pointer;">强制注销此账号</button>
-                    <button onclick="banDevice('${dId}')" style="width:100%; padding:12px; background:#8e44ad; color:#fff; border:none; border-radius:6px; font-weight:bold; cursor:pointer;">永久封禁该设备</button>
+                    
+                    <div style="border-top: 1px dashed #444; margin-top:10px; padding-top:10px;">
+                        <button onclick="banDevice('${dId}')" style="width:100%; padding:12px; background:#8e44ad; color:#fff; border:none; border-radius:6px; margin-bottom:10px; font-weight:bold; cursor:pointer;">🚫 永久封禁该设备</button>
+                        <button onclick="unbanDevice('${dId}')" style="width:100%; padding:12px; background:#07c160; color:#fff; border:none; border-radius:6px; margin-bottom:10px; font-weight:bold; cursor:pointer;">✅ 解除该设备封禁</button>
+                    </div>
                 </div>
             `;
         }
@@ -91,13 +140,11 @@
         window.changePass = function(uname) {
             const newPass = prompt(`为【${uname}】设置新密码：`);
             if(!newPass) return;
-            update(ref(db, 'users/' + uname), { password: btoa(newPass) }).then(() => {
-                alert(`已成功修改 ${uname} 的密码！`);
-            });
+            update(ref(db, 'users/' + uname), { password: btoa(newPass) }).then(() => { alert(`已成功修改密码！`); });
         }
 
         window.deleteUser = function(uname) {
-            if(confirm(`⚠️ 确认要强制注销【${uname}】的账号吗？`)) {
+            if(confirm(`⚠️ 确认要强制注销【${uname}】吗？`)) {
                 remove(ref(db, 'users/' + uname)).then(() => {
                     alert("账号已强制注销！");
                     document.getElementById('usersView').style.display = 'none';
@@ -108,10 +155,15 @@
 
         window.banDevice = function(deviceId) {
             if(deviceId === "无记录") return alert("该用户没有记录设备码！");
-            if(confirm(`⚠️ 确认要永久封禁此设备码吗？\n这台设备将永远无法注册和登录！`)) {
-                set(ref(db, 'banned_devices/' + deviceId), true).then(() => {
-                    alert("设备已永久封禁！");
-                });
+            if(confirm(`⚠️ 确认要永久封禁此设备码吗？`)) {
+                set(ref(db, 'banned_devices/' + deviceId), true).then(() => { alert("设备已永久封禁！"); });
+            }
+        }
+
+        window.unbanDevice = function(deviceId) {
+            if(deviceId === "无记录") return alert("该用户没有记录设备码！");
+            if(confirm(`✅ 确认要解除此设备的封禁吗？`)) {
+                remove(ref(db, 'banned_devices/' + deviceId)).then(() => { alert("设备已解除封禁！"); });
             }
         }
 
@@ -125,9 +177,7 @@
                     const box = document.getElementById('chatContent');
                     box.innerHTML = ''; 
                     if (snapshot.exists()) {
-                        snapshot.forEach(child => {
-                            addMsgUI(child.val().sender, child.val().text);
-                        });
+                        snapshot.forEach(child => { addMsgUI(child.val().sender, child.val().text); });
                     }
                 }
             });
@@ -140,10 +190,7 @@
             if (!currentGroupId) return alert("请先在左侧选群！");
 
             const mode = document.querySelector('input[name="sendMode"]:checked').value;
-            let senderName = "";
-            if (mode === "sys") senderName = "📢 系统公告";
-            else if (mode === "admin") senderName = "👑 作者(隐身)";
-            else senderName = "💬 作者(普通)";
+            let senderName = mode === "sys" ? "📢 系统公告" : (mode === "admin" ? "👑 作者(隐身)" : "💬 作者(普通)");
 
             push(ref(db, `groups/${currentGroupId}/messages`), { sender: senderName, text: text, time: Date.now() });
             input.value = '';
@@ -173,27 +220,48 @@
             });
         }
 
+        // ============ 🌟 新增：全网群发公告 ============
+        window.globalAnnouncement = function() {
+            const text = prompt("📢 请输入要发送给【全网所有群】的公告内容：");
+            if (!text || text.trim() === "") return;
+
+            // 遍历所有群，给每个群都发一条
+            get(ref(db, 'group_info')).then((snapshot) => {
+                if (snapshot.exists()) {
+                    const groups = snapshot.val();
+                    let count = 0;
+                    for (let gid in groups) {
+                        push(ref(db, `groups/${gid}/messages`), { 
+                            sender: "📢 系统公告", 
+                            text: text, 
+                            time: Date.now() 
+                        });
+                        count++;
+                    }
+                    alert(`✅ 公告已成功群发至全网 ${count} 个群聊！`);
+                } else {
+                    alert("当前全网还没有任何群聊！");
+                }
+            });
+        }
+
         // 核武器功能
         window.clearAllGroups = function() {
-            if(confirm("☢️ 确定要毁灭全网所有群吗？所有玩家将被踢出！")) {
+            if(confirm("☢️ 确定要毁灭全网所有群吗？")) {
                 set(ref(db, 'system_broadcast'), { action: "delete_all_groups", time: Date.now() });
                 remove(ref(db, 'groups')).then(()=>{ 
-                    remove(ref(db, 'group_info')).then(() => {
-                        alert("所有群已清空！"); 
-                        window.location.reload();
-                    });
+                    remove(ref(db, 'group_info')).then(() => { alert("所有群已清空！"); window.location.reload(); });
                 });
             }
         }
 
         window.clearAllUsers = function() {
-            if(confirm("☢️ 确定要抹除所有账号吗？所有玩家将被强制注销！")) {
+            if(confirm("☢️ 确定要抹除所有账号吗？")) {
                 set(ref(db, 'system_broadcast'), { action: "delete_all_users", time: Date.now() });
                 remove(ref(db, 'users')).then(()=>{ alert("所有账号已抹除！"); });
             }
         }
 
-        // 左侧切换视图
         window.switchLeftView = function(view) {
             if(view === 'groups') {
                 document.getElementById('groupsView').style.display = 'block';
@@ -210,13 +278,9 @@
 
     </script>
     <style>
-        /* ================= 终极 iPad/手机 自动适配布局 ================= */
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, sans-serif; -webkit-tap-highlight-color: transparent; }
-        
-        /* 使用 100dvh 锁死屏幕高度，绝对不出现滚动条乱跑 */
         body { background: #050505; height: 100vh; height: 100dvh; display: flex; color: #fff; overflow: hidden; }
         
-        /* 左侧菜单：自适应宽度，绝对不会挤压右侧 */
         .sidebar { width: 35%; max-width: 320px; min-width: 130px; background: #111; border-right: 1px solid #333; display: flex; flex-direction: column; flex-shrink: 0; }
         .sidebar-header { padding: 15px 10px; border-bottom: 1px solid #333; flex-shrink: 0;}
         .sidebar-header h1 { font-size: 15px; color: #ff3b30; margin-bottom: 10px; text-align: center; white-space: nowrap;}
@@ -225,22 +289,24 @@
         .view-btn { flex: 1; padding: 8px 4px; background: #222; color: #fff; border: 1px solid #333; border-radius: 6px; font-weight: bold; font-size: 12px; cursor: pointer; transition: 0.2s; text-align: center;}
         .view-btn.active { background: #007aff; border-color: #007aff; }
 
-        .danger-zone { display: flex; flex-direction: column; gap: 8px;}
+        .danger-zone { display: flex; flex-direction: column; gap: 6px;}
         .danger-btn { background: #330000; color: #ff3b30; border: 1px solid #ff3b30; padding: 8px 4px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 11px;}
+        /* 全网群发按钮 */
+        .global-btn { background: #330033; color: #ff00ff; border: 1px solid #ff00ff; padding: 8px 4px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 11px; box-shadow: 0 0 10px rgba(255,0,255,0.2);}
 
-        /* 列表区域：独立滚动，不影响其他 UI */
         .list-container { flex: 1; overflow-y: auto; padding: 10px; -webkit-overflow-scrolling: touch;}
-        .list-item { background: #222; padding: 10px; margin-bottom: 8px; border-radius: 8px; cursor: pointer; border-left: 3px solid #007aff; font-size: 12px; line-height: 1.4; transition: 0.2s;}
+        
+        .swipe-wrapper { position: relative; overflow: hidden; margin-bottom: 8px; border-radius: 8px; }
+        .swipe-delete-btn { position: absolute; right: 0; top: 0; height: 100%; width: 80px; background: #ff3b30; color: white; display: flex; justify-content: center; align-items: center; font-weight: bold; font-size: 14px; }
+        .swipe-content { position: relative; z-index: 2; background: #222; transition: transform 0.2s ease; margin-bottom: 0 !important;}
+
+        .list-item { padding: 10px; border-radius: 8px; cursor: pointer; border-left: 3px solid #007aff; font-size: 12px; line-height: 1.4; transition: background 0.2s;}
         .list-item:hover { background: #333; }
 
-        /* 右侧主区域：死死占满剩余所有空间 */
         .main-area { flex: 1; display: flex; flex-direction: column; background: #0a0a0a; min-width: 0; }
         
-        /* 聊天视图 */
         #chatView { display: flex; flex-direction: column; flex: 1; height: 100%; min-height: 0;}
         .chat-header { padding: 15px; background: #111; border-bottom: 1px solid #333; font-size: 14px; flex-shrink: 0;}
-        
-        /* 聊天内容：自动撑满中间，并允许顺滑滚动 */
         .chat-content { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; -webkit-overflow-scrolling: touch;}
         .msg { display: flex; flex-direction: column; max-width: 80%; align-self: flex-start;}
         .msg-name { font-size: 12px; color: #888; margin-bottom: 5px; }
@@ -248,7 +314,6 @@
         .bubble-sys { background: linear-gradient(135deg, #ffd700, #ff8c00) !important; color: #000 !important; font-weight: 900; }
         .bubble-admin { background: linear-gradient(135deg, #ff3b30, #ff007f) !important; color: #fff !important; font-weight: 900; box-shadow: 0 0 10px rgba(255, 0, 127, 0.5);}
         
-        /* 底部发送区：死死钉在底部，键盘弹起也不会被挡住 */
         .input-area { padding: 10px; background: #111; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 8px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); flex-shrink: 0;}
         .mode-select { display: flex; gap: 10px; font-size: 11px; color: #aaa; overflow-x: auto; white-space: nowrap;}
         .mode-select label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
@@ -256,7 +321,6 @@
         .input-row input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #333; background: #000; color: #fff; outline: none; font-size: 14px; min-width: 0;}
         .input-row button { background: #ff3b30; color: white; border: none; padding: 0 15px; border-radius: 8px; font-weight: bold; cursor:pointer; flex-shrink: 0;}
 
-        /* 用户管理视图 */
         #usersView { display: none; flex-direction: column; padding: 15px; flex: 1; overflow-y: auto;}
         #userManageTitle { font-size: 18px; color: #f1c40f; margin-bottom: 20px; }
     </style>
@@ -270,24 +334,22 @@
                 <button class="view-btn" onclick="switchLeftView('users'); this.classList.add('active'); this.previousElementSibling.classList.remove('active');">用户</button>
             </div>
             <div class="danger-zone">
+                <button class="global-btn" onclick="globalAnnouncement()">📢 全网群发公告</button>
                 <button class="danger-btn" onclick="clearAllGroups()">☢️ 销毁全网群聊</button>
                 <button class="danger-btn" onclick="clearAllUsers()">☢️ 抹除所有账号</button>
             </div>
         </div>
         
-        <!-- 群列表 -->
         <div class="list-container" id="groupsView">
             <div id="groupList"></div>
         </div>
         
-        <!-- 用户列表 -->
         <div class="list-container" id="usersListView" style="display:none;">
             <div id="userList"></div>
         </div>
     </div>
 
     <div class="main-area">
-        <!-- 监控聊天区 -->
         <div id="chatView">
             <div class="chat-header" id="chatTitle">请点击左侧群聊</div>
             <div class="chat-content" id="chatContent">
@@ -306,7 +368,6 @@
             </div>
         </div>
 
-        <!-- 用户管理区 -->
         <div id="usersView">
             <h1 id="userManageTitle">正在管理</h1>
             <div id="userManageContent"></div>
