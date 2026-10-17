@@ -12,157 +12,102 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
-        const myName = "👑 开发者"; 
-        let bannedUsers = [];
         let currentGroupId = ""; 
         let chatRef = null;
-        let allGroups = [];
-
-        const groupListEl = document.getElementById('groupList');
         const chatContent = document.getElementById('chatContent');
-        const msgInput = document.getElementById('msgInput');
-        const chatTitle = document.getElementById('chatTitle');
 
-        window.onload = function() { 
-            listenBans(); 
-            listenAllGroups(); // 监听所有群
-        }
+        window.onload = function() { listenAllGroups(); }
 
-        // 1. 实时监听整个数据库里有哪些群
         function listenAllGroups() {
-            const groupInfoRef = ref(db, 'group_info');
-            onValue(groupInfoRef, (snapshot) => {
-                allGroups = [];
-                groupListEl.innerHTML = ''; // 清空列表
-                
+            onValue(ref(db, 'group_info'), (snapshot) => {
+                const listEl = document.getElementById('groupList');
+                listEl.innerHTML = '';
                 if (snapshot.exists()) {
                     const data = snapshot.val();
                     for (let gid in data) {
-                        allGroups.push(gid);
-                        // 在左侧生成群列表按钮
-                        const btn = document.createElement('div');
-                        btn.className = 'group-item';
-                        btn.innerHTML = `💬 群号: ${gid}<br><span style="font-size:10px;color:#888;">群主: ${data[gid].creator}</span>`;
-                        btn.onclick = () => spyGroup(gid);
-                        groupListEl.appendChild(btn);
+                        const div = document.createElement('div');
+                        div.className = 'group-item';
+                        div.innerHTML = `💬 ${data[gid].name}<br><span style="font-size:10px;color:#888;">ID: ${gid} | 群主: ${data[gid].creator}</span>`;
+                        div.onclick = () => spyGroup(gid);
+                        listEl.appendChild(div);
                     }
                 } else {
-                    groupListEl.innerHTML = '<div style="color:#555; font-size:12px; text-align:center; margin-top:20px;">当前全网没有任何群</div>';
+                    listEl.innerHTML = '<div style="color:#555; font-size:12px; text-align:center;">暂无群聊</div>';
                 }
             });
         }
 
-        // 2. 监听封禁名单
-        function listenBans() {
-            const banRef = ref(db, 'banned');
-            onChildAdded(banRef, (snapshot) => {
-                const bannedName = snapshot.val();
-                if (!bannedUsers.includes(bannedName)) {
-                    bannedUsers.push(bannedName);
-                    document.getElementById('banList').innerText = bannedUsers.join(", ");
-                }
-            });
-        }
-
-        // 3. 隐身潜入某个群
-        window.spyGroup = function(groupId) {
-            currentGroupId = groupId;
-            chatContent.innerHTML = `<div style="text-align:center; color:#ff3b30; font-size:12px; margin-top:20px;">已隐身接入群 [${groupId}]，对方无感知...</div>`;
-            chatTitle.innerText = `正在监控：群 ${groupId}`;
+        window.spyGroup = function(gid) {
+            currentGroupId = gid;
+            chatContent.innerHTML = `<div style="text-align:center; color:#ff3b30; font-size:12px;">已监控群 [${gid}]</div>`;
             
-            chatRef = query(ref(db, `groups/${groupId}`), limitToLast(50));
+            // 先解除旧监听(简单粗暴刷新界面)
+            chatRef = query(ref(db, `groups/${gid}/messages`), limitToLast(50));
             onChildAdded(chatRef, (snapshot) => {
-                const data = snapshot.val();
-                if(currentGroupId === groupId) {
-                    addMessageToUI(data.sender, data.text, snapshot.key);
+                if(currentGroupId === gid) {
+                    const data = snapshot.val();
+                    addMsgUI(data.sender, data.text);
                 }
             });
         }
 
-        // 4. 强制发系统公告
         window.sendMsg = function() {
-            const text = msgInput.value.trim();
-            if (!text || !currentGroupId) return alert("请先在左侧选一个群！");
-            push(ref(db, `groups/${currentGroupId}`), { sender: "📢 系统管理员", text: text, time: Date.now() });
-            msgInput.value = '';
+            const text = document.getElementById('msgInput').value.trim();
+            if (!text || !currentGroupId) return alert("请先在左侧选群！");
+            push(ref(db, `groups/${currentGroupId}/messages`), { sender: "📢 系统管理员", text: text, time: Date.now() });
+            document.getElementById('msgInput').value = '';
         }
         window.handleEnter = function(e) { if (e.key === 'Enter') sendMsg(); }
 
-        // 5. 渲染聊天消息
-        function addMessageToUI(sender, text, key) {
+        function addMsgUI(sender, text) {
             const isMe = (sender === "📢 系统管理员");
             const div = document.createElement('div');
             div.className = `msg ${isMe ? 'mine' : 'theirs'}`;
-            
-            const banBtn = (!isMe) ? `<span style="color:#ff3b30; font-size:12px; margin-left:10px; cursor:pointer;" onclick="banUser('${sender}')">[封禁]</span>` : '';
-            const deleteBtn = (!isMe) ? `<span style="color:#888; font-size:12px; margin-left:10px; cursor:pointer;" onclick="deleteMsg('${key}')">[删除]</span>` : '';
-
-            div.innerHTML = `
-                <div class="msg-name">${!isMe ? sender + banBtn + deleteBtn : '系统公告'}</div>
-                <div class="msg-text">${text}</div>
-            `;
+            // 管理员专属操作：禁言按钮
+            const muteBtn = (!isMe) ? `<span style="color:#f39c12; font-size:12px; margin-left:10px; cursor:pointer;" onclick="muteUser('${sender}')">[禁言]</span>` : '';
+            div.innerHTML = `<div class="msg-name">${!isMe ? sender + muteBtn : '公告'}</div><div class="msg-text">${text}</div>`;
             chatContent.appendChild(div);
             chatContent.scrollTop = chatContent.scrollHeight;
         }
 
-        // 6. 删除某条消息
-        window.deleteMsg = function(key) {
+        // 核心功能：禁言玩家
+        window.muteUser = function(name) {
             if(!currentGroupId) return;
-            remove(ref(db, `groups/${currentGroupId}/` + key));
+            const time = prompt(`要禁言【${name}】多久？\n输入分钟数（例如 10 代表10分钟，输入 99999 代表永久封杀）`);
+            if(!time || isNaN(time)) return;
+
+            const muteUntil = Date.now() + (parseInt(time) * 60000);
+            set(ref(db, `groups/${currentGroupId}/muted/${name}`), muteUntil).then(() => {
+                alert(`已成功禁言 ${name}，时长 ${time} 分钟！`);
+            });
         }
 
-        // 7. 全网封杀
-        window.banUser = function(name) {
-            if(confirm(`确定要全网封杀【${name}】吗？`)) {
-                set(ref(db, 'banned/' + name), name).then(() => { alert(`已封杀！`); });
-            }
-        }
-
-        // 8. ☢️ 终极核武器：清空所有群
         window.clearAllGroups = function() {
-            if(confirm("⚠️ 警告：确定要毁灭所有群聊数据吗？所有聊天记录和群号将灰飞烟灭！")) {
-                remove(ref(db, 'groups'));
-                remove(ref(db, 'group_info')).then(() => {
-                    alert("所有群聊已清空！");
-                    currentGroupId = "";
-                    chatTitle.innerText = "等待选择监控目标...";
-                    chatContent.innerHTML = `<div style="text-align:center; color:#666; margin-top:50px;">等待选择监控目标...</div>`;
-                });
+            if(confirm("☢️ 确定要毁灭全网所有群吗？")) {
+                remove(ref(db, 'groups')).then(()=>{ remove(ref(db, 'group_info')); alert("已清空群聊"); });
             }
         }
-
-        // 9. ☢️ 终极核武器：清空所有账号
         window.clearAllUsers = function() {
-            if(confirm("⚠️ 警告：确定要抹除所有同学的账号和密码吗？他们将无法再登录！")) {
-                remove(ref(db, 'users')).then(() => {
-                    alert("所有账号已抹除！");
-                });
+            if(confirm("☢️ 确定要抹除所有账号吗？")) {
+                remove(ref(db, 'users')).then(()=>{ alert("已抹除"); });
             }
         }
     </script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, sans-serif; }
         body { background: #050505; height: 100vh; display: flex; color: #fff; overflow: hidden; }
-        
-        /* 左侧侧边栏 */
         .sidebar { width: 35%; max-width: 300px; background: #111; border-right: 1px solid #333; display: flex; flex-direction: column; }
         .sidebar-header { padding: 20px 15px; border-bottom: 1px solid #333; }
         .sidebar-header h1 { font-size: 16px; color: #ff3b30; margin-bottom: 15px; text-align: center;}
-        
-        .danger-zone { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px;}
-        .danger-btn { background: #330000; color: #ff3b30; border: 1px solid #ff3b30; padding: 10px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s; font-size: 13px;}
+        .danger-zone { display: flex; flex-direction: column; gap: 10px;}
+        .danger-btn { background: #330000; color: #ff3b30; border: 1px solid #ff3b30; padding: 10px; border-radius: 8px; font-weight: bold; cursor: pointer; }
         .danger-btn:hover { background: #ff3b30; color: #fff; }
-
         .group-list { flex: 1; overflow-y: auto; padding: 10px; }
         .group-item { background: #222; padding: 12px; margin-bottom: 8px; border-radius: 8px; cursor: pointer; transition: 0.2s; border-left: 3px solid #007aff; font-size: 14px;}
-        .group-item:hover { background: #333; transform: translateX(3px); }
-
-        /* 右侧主聊天区 */
+        .group-item:hover { background: #333; }
         .main-area { flex: 1; display: flex; flex-direction: column; background: #0a0a0a; }
-        .chat-header { padding: 20px; background: #111; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;}
-        .chat-header h1 { font-size: 16px; color: #fff; }
-        .ban-info { font-size: 12px; color: #ff9999; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
-
+        .chat-header { padding: 20px; background: #111; border-bottom: 1px solid #333; }
+        .chat-header h1 { font-size: 16px; }
         .chat-content { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
         .msg { display: flex; flex-direction: column; max-width: 80%; }
         .msg.mine { align-self: flex-end; align-items: flex-end; }
@@ -171,38 +116,29 @@
         .msg-text { padding: 12px 16px; border-radius: 12px; font-size: 15px; line-height: 1.4; word-break: break-all;}
         .msg.mine .msg-text { background: #ff3b30; color: #fff; }
         .msg.theirs .msg-text { background: #222; color: #fff; }
-
         .input-area { padding: 15px; background: #111; border-top: 1px solid #333; display: flex; gap: 10px; }
         .input-area input { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #000; color: #fff; outline: none;}
         .input-area button { background: #ff3b30; color: white; border: none; padding: 0 20px; border-radius: 8px; font-weight: bold; cursor: pointer; }
     </style>
 </head>
 <body>
-    <!-- 左侧：全网群组与核武按钮 -->
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>👑 上帝视角</h1>
+            <h1>👑 终极上帝面板</h1>
             <div class="danger-zone">
                 <button class="danger-btn" onclick="clearAllGroups()">☢️ 毁灭全网群聊</button>
                 <button class="danger-btn" onclick="clearAllUsers()">☢️ 抹除所有账号</button>
             </div>
         </div>
-        <div class="group-list" id="groupList">
-            <div style="color:#555; font-size:12px; text-align:center; margin-top:20px;">雷达扫描中...</div>
-        </div>
+        <div class="group-list" id="groupList"></div>
     </div>
-
-    <!-- 右侧：监控聊天区 -->
     <div class="main-area">
-        <div class="chat-header">
-            <h1 id="chatTitle">等待选择监控目标...</h1>
-            <div class="ban-info">封杀名单：<span id="banList">暂无</span></div>
-        </div>
+        <div class="chat-header"><h1>监控台：请点击左侧群聊</h1></div>
         <div class="chat-content" id="chatContent">
-            <div style="text-align:center; color:#666; margin-top:50px;">请在左侧点击任意一个群聊进行隐身潜入...</div>
+            <div style="text-align:center; color:#666; margin-top:50px;">左侧雷达已开启，点击任意群可隐身偷窥...</div>
         </div>
         <div class="input-area">
-            <input type="text" id="msgInput" placeholder="以系统管理员身份强制发公告..." onkeypress="handleEnter(event)">
+            <input type="text" id="msgInput" placeholder="以管理员身份强制发公告..." onkeypress="handleEnter(event)">
             <button onclick="sendMsg()">发布</button>
         </div>
     </div>
