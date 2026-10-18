@@ -64,7 +64,6 @@
       initAll();
       return;
     }
-    // 修复：把背景层直接打包进门禁渲染里
     document.body.innerHTML = `
       <div class="aurora-bg"></div>
       <div style="position:fixed;inset:0;display:flex;justify-content:center;align-items:center;z-index:99999;">
@@ -104,9 +103,13 @@
     onValue(ref(db, 'status'), (snap) => {
       onlineUsers = [];
       if (snap.exists()) {
+        const now = Date.now();
         const data = snap.val();
         for (let u in data) {
-          if (data[u].online) onlineUsers.push({ name: u, group: data[u].currentGroup || "" });
+          // 如果最后活跃时间在 15 秒内，算作在线
+          if (data[u].online && (now - (data[u].lastActive || 0) < 15000)) {
+            onlineUsers.push({ name: u, group: data[u].currentGroup || "" });
+          }
         }
       }
       renderUserList();
@@ -758,7 +761,6 @@
   * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; -webkit-tap-highlight-color:transparent; }
   body { background:#000; color:#fff; height:100vh; height:100dvh; display:flex; overflow:hidden; position:relative; }
   
-  /* 独立极光流体背景层，避免被毛玻璃吃掉 */
   .aurora-bg {
     position: fixed;
     top: -50vh;
