@@ -153,8 +153,12 @@
     if (!deviceId || deviceId === "无记录") return { banned: false, reason: "" };
     return new Promise((resolve) => {
       get(ref(db, 'banned_devices/' + deviceId)).then(snap => {
-        if (snap.exists()) resolve({ banned: true, reason: snap.val().reason || "未填写" });
-        else resolve({ banned: false, reason: "" });
+        if (snap.exists()) {
+          const val = snap.val();
+          resolve({ banned: true, reason: typeof val === 'object' ? (val.reason || "未填写") : "未填写" });
+        } else {
+          resolve({ banned: false, reason: "" });
+        }
       }).catch(() => resolve({ banned: false, reason: "" }));
     });
   }
@@ -345,7 +349,6 @@
           举报人: ${escapeHtml(r.reporter)} | ${new Date(r.time).toLocaleString()}
         </span>`;
 
-      // 点击：发送警告
       div.onclick = () => { 
         const reason = prompt(`对被举报人【${r.target}】发送警告：`, `你被举报存在违规行为（${r.reason}），请规范发言！`);
         if (reason) {
@@ -358,7 +361,6 @@
         }
       };
 
-      // 右键/长按删除
       div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         if (confirm(`确定要删除这条举报记录吗？`)) {
@@ -527,6 +529,13 @@
       text,
       time: Date.now()
     }).then(() => alert("更新公告已全网推送！"));
+  };
+
+  window.cancelUpdate = function () {
+    if (!confirm("⚠️ 警告：确定要撤销当前的更新公告吗？\n撤销后，你将可以发布新的公告。")) return;
+    remove(ref(db, 'system_broadcast')).then(() => {
+      alert("✅ 当前公告已撤销，你可以发布新的更新公告了！");
+    });
   };
 
   window.authorCreateGroup = function () {
@@ -1226,6 +1235,7 @@
       <button id="toggleBtn" onclick="togglePanel()">⚙️ 展开高级面板</button>
       <div id="advancedPanel" class="danger-zone">
         <button class="create-btn" onclick="publishUpdate()" style="background:rgba(255,215,0,0.15);color:#ffd700;border-color:rgba(255,215,0,0.4);">📢 发布版本更新</button>
+        <button class="danger-btn" onclick="cancelUpdate()" style="background:rgba(255,59,48,0.15);color:#ff453a;border-color:rgba(255,59,48,0.4);">🗑️ 撤销当前更新公告</button>
         <button class="btn-batch" onclick="batchBroadcast()">⚡ 批量穿透发言</button>
         <button class="btn-fake" onclick="fakeBroadcast()">🎭 伪装全网发言</button>
         <button class="create-btn" onclick="authorCreateGroup()">➕ 作者建群</button>
