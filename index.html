@@ -27,6 +27,7 @@
   
   let allUsersData = {};
   let onlineUsers = []; 
+  let violationsData = {};
   let isPanelOpen = false;
 
   function escapeHtml(s) {
@@ -97,6 +98,16 @@
     listenAllGroups();
     listenAllUsers();
     listenOnlineStatus(); 
+    listenViolations();
+  }
+
+  function listenViolations() {
+    onValue(ref(db, 'violations'), (snap) => {
+      violationsData = snap.exists() ? snap.val() : {};
+      if (currentView === 'violations') {
+        document.querySelector('.view-btn:nth-child(3)').click();
+      }
+    });
   }
 
   function listenOnlineStatus() {
@@ -171,6 +182,7 @@
       actionTargetName = uname; 
       document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
+      document.getElementById('violationsView').style.display = 'none';
     }
 
     const dId = userData.deviceId || "无记录";
@@ -203,6 +215,32 @@
       </div>`;
   };
 
+  window.renderViolations = function() {
+    const el = document.getElementById('violationsList');
+    el.innerHTML = '';
+    const sorted = Object.keys(violationsData).map(name => {
+      return { name, ...violationsData[name] };
+    }).sort((a, b) => b.count - a.count);
+
+    if (sorted.length === 0) {
+      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无违规记录</div>';
+      return;
+    }
+
+    sorted.forEach(v => {
+      const div = document.createElement('div');
+      div.className = 'list-item user-item';
+      div.style.borderLeftColor = '#ff3b30';
+      div.innerHTML = `
+        <span style="color:#ff3b30;font-weight:bold;">⚠️ ${escapeHtml(v.name)}</span> (违规 ${v.count} 次)<br>
+        <span style="font-size:10px;color:rgba(255,255,255,0.5);">
+          最后违规内容: "${escapeHtml(v.lastWord)}"
+        </span>`;
+      div.onclick = () => { alert(`【${v.name}】共违规 ${v.count} 次。\n最近一次违规词：${v.lastWord}`); };
+      el.appendChild(div);
+    });
+  };
+
   function listenAllGroups() {
     onValue(ref(db, 'group_info'), (snapshot) => {
       const listEl = document.getElementById('groupList');
@@ -226,6 +264,7 @@
             } else {
               currentView = "groups";
               document.getElementById('usersView').style.display = 'none';
+              document.getElementById('violationsView').style.display = 'none';
               document.getElementById('chatView').style.display = 'flex';
               spyGroup(gid);
             }
@@ -313,6 +352,35 @@
     document.getElementById('toggleBtn').innerText = isPanelOpen ? '🔼 收起高级面板' : '⚙️ 展开高级面板';
   };
 
+  window.publishUpdate = function () {
+    const text = prompt("请输入本次系统更新公告（用户仅会看到一次，点击确定后不再弹出）：");
+    if (!text || text.trim() === "") return;
+    set(ref(db, 'system_broadcast'), {
+      action: "global_announcement",
+      text,
+      time: Date.now()
+    }).then(() => alert("更新公告已全网推送！"));
+  };
+
+  // 修复：清空聊天记录函数
+  window.clearGroupChat = function () {
+    if (!confirm("⚠️ 警告：确定要清空该群的全部聊天记录吗？\n（包括系统公告，此操作会同步到所有玩家）")) return;
+    
+    // 先删掉所有聊天
+    remove(ref(db, `groups/${currentGroupId}/messages`)).then(() => {
+      // 删除完成后再发一条系统公告告诉玩家
+      push(ref(db, `groups/${currentGroupId}/messages`), {
+        sender: "📢 系统公告",
+        text: `作者已清空本群的聊天记录`,
+        time: Date.now()
+      });
+      alert("聊天记录已彻底清空！");
+      closeSettings();
+    }).catch(err => {
+      alert("清空失败：" + err.message);
+    });
+  };
+
   window.authorCreateGroup = function () {
     const gName = prompt("新群名字：");
     if (!gName || gName.trim() === "") return;
@@ -382,11 +450,6 @@
         });
         count++;
       }
-      set(ref(db, 'system_broadcast'), {
-        action: "global_announcement",
-        text,
-        time: Date.now()
-      });
       alert(`已发至 ${count} 个群`);
     });
   };
@@ -429,7 +492,6 @@
         } else {
           banner.style.display = 'none';
         }
-        // 如果群设置开着，同步开关状态
         if (document.getElementById('settingsModal').style.display === 'flex') {
           document.getElementById('muteAllToggle').checked = !!currentGroupInfo.muteAll;
         }
@@ -442,7 +504,7 @@
       if (snapshot.exists()) {
         snapshot.forEach(child => {
           const m = child.val();
-          addMsgUI(m.sender, m.text, m.isAuthorMsg);
+          addMsgUI(child.key, m.sender, m.text, m.isAuthorMsg);
         });
       } else {
         box.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.4);margin-top:50px;font-size:14px;">暂无消息</div>';
@@ -480,7 +542,7 @@
     if (e.key === 'Enter') sendMsg();
   };
 
-  function addMsgUI(sender, text, isAuthorMsg) {
+  function addMsgUI(msgId, sender, text, isAuthorMsg) {
     const isSys = (sender === "📢 系统公告" || sender === "📢 系统提示");
     const isAuthor = (sender === AUTHOR_NAME || sender === "👑 作者(隐身)" || isAuthorMsg);
 
@@ -498,6 +560,13 @@
     div.innerHTML = `
       <div class="msg-name">${escapeHtml(sender)}</div>
       <div class="msg-text ${bubbleClass}">${escapeHtml(text)}</div>`;
+      
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (confirm(`撤回该消息？`)) {
+        remove(ref(db, `groups/${currentGroupId}/messages/${msgId}`));
+      }
+    });
 
     const box = document.getElementById('chatContent');
     box.appendChild(div);
@@ -509,7 +578,6 @@
     document.getElementById('settingsModal').style.display = 'flex';
     document.getElementById('displayGroupId').innerText = currentGroupId;
     loadMemberList();
-    
     document.getElementById('muteAllToggle').checked = !!currentGroupInfo.muteAll;
   };
 
@@ -518,17 +586,7 @@
   };
 
   window.copyGroupId = function () {
-    navigator.clipboard.writeText(currentGroupId).then(() => {
-      alert("群号已复制！");
-    }).catch(() => {
-      const ta = document.createElement('textarea');
-      ta.value = currentGroupId;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      alert("群号已复制！");
-    });
+    navigator.clipboard.writeText(currentGroupId).then(() => alert("群号已复制！"));
   };
 
   window.toggleMuteAll = function(e) {
@@ -766,15 +824,26 @@
     if (view === 'groups') {
       document.getElementById('groupsView').style.display = 'block';
       document.getElementById('usersListView').style.display = 'none';
+      document.getElementById('violationsView').style.display = 'none';
       document.getElementById('chatView').style.display = 'flex';
       document.getElementById('usersView').style.display = 'none';
       currentView = 'groups';
-    } else {
+    } else if (view === 'users') {
       document.getElementById('groupsView').style.display = 'none';
       document.getElementById('usersListView').style.display = 'block';
+      document.getElementById('violationsView').style.display = 'none';
       document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
       currentView = 'users';
+      if (spyUnsub) { spyUnsub(); spyUnsub = null; }
+    } else if (view === 'violations') {
+      document.getElementById('groupsView').style.display = 'none';
+      document.getElementById('usersListView').style.display = 'none';
+      document.getElementById('violationsView').style.display = 'block';
+      document.getElementById('chatView').style.display = 'none';
+      document.getElementById('usersView').style.display = 'flex';
+      currentView = 'violations';
+      renderViolations();
       if (spyUnsub) { spyUnsub(); spyUnsub = null; }
     }
   };
@@ -817,7 +886,7 @@
   .view-btn {
     flex:1; padding:10px 4px; background:rgba(255,255,255,0.05);
     color:rgba(255,255,255,0.6); border:1px solid rgba(255,255,255,0.1);
-    border-radius:10px; font-weight:bold; font-size:13px; cursor:pointer;
+    border-radius:10px; font-weight:bold; font-size:12px; cursor:pointer;
     transition:0.2s; text-align:center;
   }
   .view-btn.active { background:rgba(255,215,0,0.2); color:#ffd700; border-color:rgba(255,215,0,0.5); }
@@ -954,17 +1023,19 @@
     <div class="sidebar-header">
       <h1>作者控制台</h1>
       <div class="view-switch">
-        <button class="view-btn active" onclick="switchLeftView('groups', this)">群聊列表</button>
-        <button class="view-btn" onclick="switchLeftView('users', this)">用户库</button>
+        <button class="view-btn active" onclick="switchLeftView('groups', this)">群聊</button>
+        <button class="view-btn" onclick="switchLeftView('users', this)">用户</button>
+        <button class="view-btn" onclick="switchLeftView('violations', this)">违规</button>
       </div>
       
       <button id="toggleBtn" onclick="togglePanel()">⚙️ 展开高级面板</button>
       <div id="advancedPanel" class="danger-zone">
+        <button class="create-btn" onclick="publishUpdate()" style="background:rgba(255,215,0,0.15);color:#ffd700;border-color:rgba(255,215,0,0.4);">📢 发布版本更新</button>
         <button class="btn-batch" onclick="batchBroadcast()">⚡ 批量穿透发言</button>
         <button class="btn-fake" onclick="fakeBroadcast()">🎭 伪装全网发言</button>
         <button class="create-btn" onclick="authorCreateGroup()">➕ 作者建群</button>
         <button class="pull-btn" onclick="openPullModal()">👥 强制拉人</button>
-        <button class="global-btn" onclick="globalAnnouncement()">📢 全网公告</button>
+        <button class="global-btn" onclick="globalAnnouncement()">📢 全网聊天公告</button>
         <button class="danger-btn" onclick="clearAllGroups()">☢️ 销毁全网群聊</button>
         <button class="danger-btn" onclick="clearAllUsers()">☢️ 抹除所有用户</button>
       </div>
@@ -972,6 +1043,7 @@
     </div>
     <div class="list-container" id="groupsView"><div id="groupList"></div></div>
     <div class="list-container" id="usersListView" style="display:none;"><div id="userList"></div></div>
+    <div class="list-container" id="violationsView" style="display:none;"><div id="violationsList"></div></div>
   </div>
 
   <div class="main-area">
@@ -1043,7 +1115,10 @@
         <h4 style="margin-bottom:10px;color:#fff;font-size:15px;text-align:left;">群成员管理</h4>
         <div id="memberList"></div>
       </div>
-      <button class="btn-close" onclick="closeSettings()" style="margin-top:20px;">关闭</button>
+      
+      <!-- 作者清空聊天记录按钮 -->
+      <button onclick="clearGroupChat()" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);margin-top:20px;">🧹 清空本群聊天记录</button>
+      <button class="btn-close" onclick="closeSettings()" style="margin-top:10px;">关闭</button>
     </div>
   </div>
 </body>
