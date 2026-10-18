@@ -106,7 +106,6 @@
         const now = Date.now();
         const data = snap.val();
         for (let u in data) {
-          // 如果最后活跃时间在 15 秒内，算作在线
           if (data[u].online && (now - (data[u].lastActive || 0) < 15000)) {
             onlineUsers.push({ name: u, group: data[u].currentGroup || "" });
           }
@@ -422,7 +421,15 @@
     box.innerHTML = '';
 
     onValue(ref(db, 'group_info/' + gid), (snap) => {
-      if (snap.exists()) currentGroupInfo = snap.val();
+      if (snap.exists()) {
+        currentGroupInfo = snap.val();
+        const banner = document.getElementById('muteAllBanner');
+        if (currentGroupInfo.muteAll) {
+          banner.style.display = 'block';
+        } else {
+          banner.style.display = 'none';
+        }
+      }
     });
 
     spyUnsub = onValue(query(ref(db, `groups/${gid}/messages`), limitToLast(50)), (snapshot) => {
@@ -958,6 +965,12 @@
         <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">请点击左侧群聊</span>
         <button class="settings-btn" onclick="openGroupSettings()">⚙️</button>
       </div>
+
+      <!-- 全员禁言提示横幅 -->
+      <div id="muteAllBanner" style="display:none; background:linear-gradient(90deg, rgba(255,59,48,0.8), rgba(255,0,127,0.8)); color:#fff; text-align:center; padding:8px; font-size:13px; font-weight:bold; text-shadow:0 1px 2px rgba(0,0,0,0.5); flex-shrink:0;">
+        ⚠️ 群主开启了全员禁言
+      </div>
+
       <div class="chat-content" id="chatContent">
         <div style="text-align:center;color:rgba(255,255,255,0.4);margin-top:50px;font-size:14px;">等待接入</div>
       </div>
