@@ -112,7 +112,7 @@
             const gName = prompt("请输入你要创建的【上帝专属群】名字：");
             if (!gName || gName.trim() === "") return;
             const gid = Math.floor(1000 + Math.random() * 9000).toString();
-            set(ref(db, 'group_info/' + gid), { creator: "👑 作者(上帝)", name: gName.trim(), admins: ["👑 作者(上帝)"], members: ["👑 作者(上帝)"] }).then(() => {
+            set(ref(db, 'group_info/' + gid), { creator: "👑 作者", name: gName.trim(), admins: ["👑 作者(上帝)"], members: ["👑 作者(上帝)"] }).then(() => {
                 alert(`🎉 上帝建群成功！\n群名：${gName}\n群号：${gid}\n你可以点击该群，然后点【强制拉人】把所有人塞进去。`);
             });
         }
