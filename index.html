@@ -28,6 +28,7 @@
   let allUsersData = {};
   let onlineUsers = []; 
   let violationsData = {};
+  let reportsData = {};
   let isPanelOpen = false;
 
   function escapeHtml(s) {
@@ -99,6 +100,7 @@
     listenAllUsers();
     listenOnlineStatus(); 
     listenViolations();
+    listenReports();
   }
 
   function listenViolations() {
@@ -106,6 +108,15 @@
       violationsData = snap.exists() ? snap.val() : {};
       if (currentView === 'violations') {
         document.querySelector('.view-btn:nth-child(3)').click();
+      }
+    });
+  }
+
+  function listenReports() {
+    onValue(ref(db, 'reports'), (snap) => {
+      reportsData = snap.exists() ? snap.val() : {};
+      if (currentView === 'reports') {
+        document.querySelector('.view-btn:nth-child(4)').click();
       }
     });
   }
@@ -138,7 +149,6 @@
     return '<span style="color:#30d158;">🟢 在线 (大厅)</span>';
   }
 
-  // 监听设备封禁状态
   function getBanStatus(deviceId) {
     if (!deviceId || deviceId === "无记录") return { banned: false, reason: "" };
     return new Promise((resolve) => {
@@ -194,6 +204,10 @@
       document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
       document.getElementById('violationsView').style.display = 'none';
+      document.getElementById('reportsView').style.display = 'none';
+      closeActionModal();
+      closePullModal();
+      closeSettings();
     }
 
     const dId = userData.deviceId || "无记录";
@@ -204,9 +218,9 @@
     let banHtml = "";
     if (banInfo.banned) {
       banHtml = `
-        <div style="background:rgba(255,59,48,0.2); padding:10px; border-radius:10px; border:1px solid rgba(255,59,48,0.5); margin-bottom:12px;">
-          <p style="color:#ff453a; font-weight:bold; font-size:14px; margin-bottom:4px;">🚫 设备已封禁</p>
-          <p style="color:#fff; font-size:12px;">原因: ${escapeHtml(banInfo.reason)}</p>
+        <div style="background:rgba(255,59,48,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,59,48,0.6); margin-bottom:15px; animation: pulse 2s infinite;">
+          <p style="color:#ff453a; font-weight:bold; font-size:15px; margin-bottom:6px;">⚠️ 警告：设备已被封禁</p>
+          <p style="color:#fff; font-size:13px;">封禁原因：${escapeHtml(banInfo.reason)}</p>
         </div>
       `;
     }
@@ -254,12 +268,126 @@
       const div = document.createElement('div');
       div.className = 'list-item user-item';
       div.style.borderLeftColor = '#ff3b30';
+      div.style.cursor = 'pointer';
+      
       div.innerHTML = `
         <span style="color:#ff3b30;font-weight:bold;">⚠️ ${escapeHtml(v.name)}</span> (违规 ${v.count} 次)<br>
         <span style="font-size:10px;color:rgba(255,255,255,0.5);">
           最后违规内容: "${escapeHtml(v.lastWord)}"
         </span>`;
-      div.onclick = () => { alert(`【${v.name}】共违规 ${v.count} 次。\n最近一次违规词：${v.lastWord}`); };
+
+      div.onclick = () => { 
+        const reason = prompt(`【${v.name}】违规 ${v.count} 次。\n请输入要在客户端屏幕上警告他的话：`, "你已多次使用违规词汇，请文明发言！");
+        if (reason) {
+          set(ref(db, 'warnings/' + v.name), { active: true, reason: reason, time: Date.now() }).then(() => {
+            alert(`已向【${v.name}】发送客户端强制警告！`);
+          });
+        }
+      };
+
+      div.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (confirm(`确定要删除【${v.name}】的违规记录吗？`)) {
+          remove(ref(db, 'violations/' + v.name)).then(() => alert("记录已删除"));
+        }
+      });
+
+      let touchTimer;
+      let isMoved = false;
+      div.addEventListener('touchstart', (e) => {
+        isMoved = false;
+        touchTimer = setTimeout(() => {
+          if (!isMoved) {
+            if (confirm(`确定要删除【${v.name}】的违规记录吗？`)) {
+              remove(ref(db, 'violations/' + v.name)).then(() => alert("记录已删除"));
+            }
+          }
+        }, 800);
+      }, { passive: true });
+
+      div.addEventListener('touchmove', () => {
+        isMoved = true;
+        if (touchTimer) clearTimeout(touchTimer);
+      }, { passive: true });
+
+      div.addEventListener('touchend', () => {
+        if (touchTimer) clearTimeout(touchTimer);
+      });
+
+      el.appendChild(div);
+    });
+  };
+
+  window.renderReports = function() {
+    const el = document.getElementById('reportsList');
+    el.innerHTML = '';
+    const sorted = Object.keys(reportsData).map(key => {
+      return { key, ...reportsData[key] };
+    }).sort((a, b) => b.time - a.time);
+
+    if (sorted.length === 0) {
+      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无玩家举报</div>';
+      return;
+    }
+
+    sorted.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'list-item user-item';
+      div.style.borderLeftColor = '#ff9500';
+      div.style.cursor = 'pointer';
+      
+      div.innerHTML = `
+        <span style="color:#ff9500;font-weight:bold;">🚨 被举报人: ${escapeHtml(r.target)}</span><br>
+        <span style="font-size:12px;color:rgba(255,255,255,0.8);">
+          原因: ${escapeHtml(r.reason)}
+        </span><br>
+        <span style="font-size:10px;color:rgba(255,255,255,0.5);">
+          举报人: ${escapeHtml(r.reporter)} | ${new Date(r.time).toLocaleString()}
+        </span>`;
+
+      // 点击：发送警告
+      div.onclick = () => { 
+        const reason = prompt(`对被举报人【${r.target}】发送警告：`, `你被举报存在违规行为（${r.reason}），请规范发言！`);
+        if (reason) {
+          set(ref(db, 'warnings/' + r.target), { active: true, reason: reason, time: Date.now() }).then(() => {
+            alert(`已向【${r.target}】发送客户端强制警告！`);
+            if(confirm("是否同时删除这条举报记录？")) {
+              remove(ref(db, 'reports/' + r.key));
+            }
+          });
+        }
+      };
+
+      // 右键/长按删除
+      div.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (confirm(`确定要删除这条举报记录吗？`)) {
+          remove(ref(db, 'reports/' + r.key)).then(() => alert("记录已删除"));
+        }
+      });
+
+      let touchTimer;
+      let isMoved = false;
+      div.addEventListener('touchstart', (e) => {
+        isMoved = false;
+        touchTimer = setTimeout(() => {
+          if (!isMoved) {
+            if (confirm(`确定要删除这条举报记录吗？`)) {
+              remove(ref(db, 'reports/' + r.key)).then(() => alert("记录已删除"));
+            }
+          }
+        }, 800);
+      }, { passive: true });
+
+      div.addEventListener('touchmove', () => {
+        isMoved = true;
+        if (touchTimer) clearTimeout(touchTimer);
+      }, { passive: true });
+
+      div.addEventListener('touchend', () => {
+        if (touchTimer) clearTimeout(touchTimer);
+      });
+
       el.appendChild(div);
     });
   };
@@ -288,8 +416,12 @@
               currentView = "groups";
               document.getElementById('usersView').style.display = 'none';
               document.getElementById('violationsView').style.display = 'none';
+              document.getElementById('reportsView').style.display = 'none';
               document.getElementById('chatView').style.display = 'flex';
               spyGroup(gid);
+              closeActionModal();
+              closePullModal();
+              closeSettings();
             }
             lastClick = now;
           };
@@ -616,7 +748,6 @@
     });
   };
 
-  // 修复：清空聊天记录函数
   window.clearGroupChat = function () {
     if (!confirm("⚠️ 警告：确定要清空该群的全部聊天记录吗？\n（包括系统公告，此操作会同步到所有玩家）")) return;
     remove(ref(db, `groups/${currentGroupId}/messages`)).then(() => {
@@ -707,6 +838,24 @@
 
   window.closeActionModal = function () {
     document.getElementById('actionModal').style.display = 'none';
+  };
+
+  window.manualViolation = function () {
+    if (!actionTargetName) return;
+    const reason = prompt(`请输入【${actionTargetName}】的违规原因或内容：`);
+    if (reason === null) return;
+    
+    get(ref(db, 'violations/' + actionTargetName)).then(snap => {
+      const currentCount = snap.exists() ? snap.val().count : 0;
+      set(ref(db, 'violations/' + actionTargetName), {
+        count: currentCount + 1,
+        lastTime: Date.now(),
+        lastWord: reason || "（作者手动标记）"
+      }).then(() => {
+        alert(`已成功将【${actionTargetName}】标记为违规。`);
+        closeActionModal();
+      });
+    });
   };
 
   window.addAdminTarget = function () {
@@ -857,6 +1006,7 @@
       document.getElementById('groupsView').style.display = 'block';
       document.getElementById('usersListView').style.display = 'none';
       document.getElementById('violationsView').style.display = 'none';
+      document.getElementById('reportsView').style.display = 'none';
       document.getElementById('chatView').style.display = 'flex';
       document.getElementById('usersView').style.display = 'none';
       currentView = 'groups';
@@ -864,6 +1014,7 @@
       document.getElementById('groupsView').style.display = 'none';
       document.getElementById('usersListView').style.display = 'block';
       document.getElementById('violationsView').style.display = 'none';
+      document.getElementById('reportsView').style.display = 'none';
       document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
       currentView = 'users';
@@ -872,10 +1023,21 @@
       document.getElementById('groupsView').style.display = 'none';
       document.getElementById('usersListView').style.display = 'none';
       document.getElementById('violationsView').style.display = 'block';
+      document.getElementById('reportsView').style.display = 'none';
       document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
       currentView = 'violations';
       renderViolations();
+      if (spyUnsub) { spyUnsub(); spyUnsub = null; }
+    } else if (view === 'reports') {
+      document.getElementById('groupsView').style.display = 'none';
+      document.getElementById('usersListView').style.display = 'none';
+      document.getElementById('violationsView').style.display = 'none';
+      document.getElementById('reportsView').style.display = 'block';
+      document.getElementById('chatView').style.display = 'none';
+      document.getElementById('usersView').style.display = 'flex';
+      currentView = 'reports';
+      renderReports();
       if (spyUnsub) { spyUnsub(); spyUnsub = null; }
     }
   };
@@ -1028,7 +1190,7 @@
     display:none; justify-content:center; align-items:center; z-index:9999;
   }
   .action-box, .pull-box, .modal-box {
-    background:rgba(30,30,30,0.9); backdrop-filter:blur(30px);
+    background:rgba(30,30,30,0.95); backdrop-filter:blur(30px);
     border:1px solid rgba(255,255,255,0.15); width:85%; max-width:320px;
     padding:24px; border-radius:24px; display:flex; flex-direction:column;
     gap:12px; box-shadow:0 20px 50px rgba(0,0,0,0.6); max-height:80vh;
@@ -1058,6 +1220,7 @@
         <button class="view-btn active" onclick="switchLeftView('groups', this)">群聊</button>
         <button class="view-btn" onclick="switchLeftView('users', this)">用户</button>
         <button class="view-btn" onclick="switchLeftView('violations', this)">违规</button>
+        <button class="view-btn" onclick="switchLeftView('reports', this)">举报</button>
       </div>
       
       <button id="toggleBtn" onclick="togglePanel()">⚙️ 展开高级面板</button>
@@ -1076,6 +1239,7 @@
     <div class="list-container" id="groupsView"><div id="groupList"></div></div>
     <div class="list-container" id="usersListView" style="display:none;"><div id="userList"></div></div>
     <div class="list-container" id="violationsView" style="display:none;"><div id="violationsList"></div></div>
+    <div class="list-container" id="reportsView" style="display:none;"><div id="reportsList"></div></div>
   </div>
 
   <div class="main-area">
@@ -1115,6 +1279,10 @@
       <h3>对 <span id="modalTargetName" style="color:#0a84ff;"></span> 操作</h3>
       <button id="btnSetAdmin" style="background:rgba(0,122,255,0.2);color:#0a84ff;border:1px solid rgba(0,122,255,0.4);">设为管理员</button>
       <button id="btnMute" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);">禁言该用户</button>
+      
+      <!-- 手动标记违规 -->
+      <button onclick="manualViolation()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;">⚠️ 手动标记违规</button>
+      
       <button onclick="kickTarget()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);">踢出群聊</button>
       <button class="btn-close" onclick="closeActionModal()">取消</button>
     </div>
