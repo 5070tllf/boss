@@ -138,6 +138,17 @@
     return '<span style="color:#30d158;">🟢 在线 (大厅)</span>';
   }
 
+  // 监听设备封禁状态
+  function getBanStatus(deviceId) {
+    if (!deviceId || deviceId === "无记录") return { banned: false, reason: "" };
+    return new Promise((resolve) => {
+      get(ref(db, 'banned_devices/' + deviceId)).then(snap => {
+        if (snap.exists()) resolve({ banned: true, reason: snap.val().reason || "未填写" });
+        else resolve({ banned: false, reason: "" });
+      }).catch(() => resolve({ banned: false, reason: "" }));
+    });
+  }
+
   function renderUserList() {
     const userListEl = document.getElementById('userList');
     if (!userListEl) return;
@@ -176,7 +187,7 @@
     });
   }
 
-  window.manageUser = function (uname, userData, isRefresh = false) {
+  window.manageUser = async function (uname, userData, isRefresh = false) {
     if (!isRefresh) {
       currentView = "users";
       actionTargetName = uname; 
@@ -188,10 +199,22 @@
     const dId = userData.deviceId || "无记录";
     const plainPwd = safeAtob(userData.password);
     const statusStr = getStatusText(uname);
+    const banInfo = await getBanStatus(dId);
+
+    let banHtml = "";
+    if (banInfo.banned) {
+      banHtml = `
+        <div style="background:rgba(255,59,48,0.2); padding:10px; border-radius:10px; border:1px solid rgba(255,59,48,0.5); margin-bottom:12px;">
+          <p style="color:#ff453a; font-weight:bold; font-size:14px; margin-bottom:4px;">🚫 设备已封禁</p>
+          <p style="color:#fff; font-size:12px;">原因: ${escapeHtml(banInfo.reason)}</p>
+        </div>
+      `;
+    }
 
     document.getElementById('userManageTitle').innerText = `管理: ${uname}`;
     document.getElementById('userManageContent').innerHTML = `
       <div class="user-manage-card">
+        ${banHtml}
         <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
           账号：<span style="color:#fff;font-weight:bold;">${escapeHtml(uname)}</span>
         </p>
@@ -336,14 +359,26 @@
 
   window.banDevice = function (deviceId) {
     if (deviceId === "无记录") return alert("无设备码");
-    if (!confirm("确认永久封禁此设备？")) return;
-    set(ref(db, 'banned_devices/' + deviceId), true).then(() => alert("已封禁"));
+    const reason = prompt("请输入封禁原因（如：辱骂群友、发色情广告等）：");
+    if (reason === null) return;
+    if (!confirm(`确认永久封禁此设备？\n原因：${reason}`)) return;
+    set(ref(db, 'banned_devices/' + deviceId), { banned: true, reason: reason }).then(() => {
+      alert("已封禁");
+      if (currentView === 'users' && actionTargetName) {
+        manageUser(actionTargetName, allUsersData[actionTargetName], true);
+      }
+    });
   };
 
   window.unbanDevice = function (deviceId) {
     if (deviceId === "无记录") return alert("无设备码");
     if (!confirm("确认解除此设备封禁？")) return;
-    remove(ref(db, 'banned_devices/' + deviceId)).then(() => alert("已解封"));
+    remove(ref(db, 'banned_devices/' + deviceId)).then(() => {
+      alert("已解封");
+      if (currentView === 'users' && actionTargetName) {
+        manageUser(actionTargetName, allUsersData[actionTargetName], true);
+      }
+    });
   };
 
   window.togglePanel = function() {
@@ -360,25 +395,6 @@
       text,
       time: Date.now()
     }).then(() => alert("更新公告已全网推送！"));
-  };
-
-  // 修复：清空聊天记录函数
-  window.clearGroupChat = function () {
-    if (!confirm("⚠️ 警告：确定要清空该群的全部聊天记录吗？\n（包括系统公告，此操作会同步到所有玩家）")) return;
-    
-    // 先删掉所有聊天
-    remove(ref(db, `groups/${currentGroupId}/messages`)).then(() => {
-      // 删除完成后再发一条系统公告告诉玩家
-      push(ref(db, `groups/${currentGroupId}/messages`), {
-        sender: "📢 系统公告",
-        text: `作者已清空本群的聊天记录`,
-        time: Date.now()
-      });
-      alert("聊天记录已彻底清空！");
-      closeSettings();
-    }).catch(err => {
-      alert("清空失败：" + err.message);
-    });
   };
 
   window.authorCreateGroup = function () {
@@ -597,6 +613,22 @@
         text: isChecked ? `作者开启了全员禁言` : `作者解除了全员禁言`,
         time: Date.now()
       });
+    });
+  };
+
+  // 修复：清空聊天记录函数
+  window.clearGroupChat = function () {
+    if (!confirm("⚠️ 警告：确定要清空该群的全部聊天记录吗？\n（包括系统公告，此操作会同步到所有玩家）")) return;
+    remove(ref(db, `groups/${currentGroupId}/messages`)).then(() => {
+      push(ref(db, `groups/${currentGroupId}/messages`), {
+        sender: "📢 系统公告",
+        text: `作者已清空本群的聊天记录`,
+        time: Date.now()
+      });
+      alert("聊天记录已彻底清空！");
+      closeSettings();
+    }).catch(err => {
+      alert("清空失败：" + err.message);
     });
   };
 
@@ -1116,7 +1148,6 @@
         <div id="memberList"></div>
       </div>
       
-      <!-- 作者清空聊天记录按钮 -->
       <button onclick="clearGroupChat()" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);margin-top:20px;">🧹 清空本群聊天记录</button>
       <button class="btn-close" onclick="closeSettings()" style="margin-top:10px;">关闭</button>
     </div>
