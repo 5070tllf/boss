@@ -25,10 +25,9 @@
   let spyUnsub = null;
   let currentGroupInfo = {}; 
   
-  // 私聊相关
   let currentPrivateRoomId = "";
   let privateSpyUnsub = null;
-  let allPrivateRooms = {}; // 存储所有私聊房间信息
+  let allPrivateRooms = {}; 
   
   let allUsersData = {};
   let onlineUsers = []; 
@@ -50,6 +49,21 @@
   function safeAtob(b64) {
     try { return b64 ? atob(b64) : '(无)'; }
     catch(e) { return '(无法解密)'; }
+  }
+  function parseTimeInput(input) {
+    if (!input) return 0;
+    input = String(input).trim().toLowerCase();
+    if (input.includes('e+') || input.includes('e')) {
+      const n = parseFloat(input.replace(/[^0-9.e+]/g, ''));
+      if (isNaN(n) || n > 1e+10) return 3153600000000;
+      return n * 86400000;
+    }
+    let n = parseFloat(input);
+    if (isNaN(n)) n = 0;
+    if (input.includes('m')) return n * 60000;
+    if (input.includes('h')) return n * 3600000;
+    if (input.includes('d')) return n * 86400000;
+    return n * 60000;
   }
 
   async function ensureAuthorUser() {
@@ -110,7 +124,7 @@
     listenOnlineStatus(); 
     listenViolations();
     listenReports();
-    listenAllPrivateRooms(); // 监听全网私聊
+    listenAllPrivateRooms();
   }
 
   function listenViolations() {
@@ -152,7 +166,6 @@
     });
   }
 
-  // 监听全网私聊房间
   function listenAllPrivateRooms() {
     onValue(ref(db, 'private_msgs'), (snap) => {
       allPrivateRooms = {};
@@ -160,7 +173,6 @@
         snap.forEach(roomSnap => {
           const roomId = roomSnap.key;
           const msgs = roomSnap.val();
-          // 获取最后一条消息
           let lastMsg = null;
           let lastTime = 0;
           for (let key in msgs) {
@@ -206,6 +218,24 @@
     });
   }
 
+  function getGlobalMuteStatus(uname) {
+    return new Promise((resolve) => {
+      get(ref(db, 'global_muted/' + uname)).then(snap => {
+        if (snap.exists()) {
+          const until = snap.val();
+          if (until > Date.now()) {
+            resolve({ muted: true, until: until, remain: until - Date.now() });
+          } else {
+            remove(ref(db, 'global_muted/' + uname));
+            resolve({ muted: false });
+          }
+        } else {
+          resolve({ muted: false });
+        }
+      });
+    });
+  }
+
   function renderUserList() {
     const userListEl = document.getElementById('userList');
     if (!userListEl) return;
@@ -233,7 +263,6 @@
     }
   }
 
-  // 渲染左侧私聊房间列表
   function renderPrivateRooms() {
     const el = document.getElementById('privateRoomList');
     el.innerHTML = '';
@@ -261,7 +290,6 @@
       
       div.onclick = () => openPrivateMonitor(room.roomId, room.user1, room.user2);
       
-      // 右键删除整个聊天记录
       div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         if (confirm(`确定要彻底清空并删除这段私聊记录吗？`)) {
@@ -269,6 +297,7 @@
             alert("记录已删除");
             if(currentPrivateRoomId === room.roomId) {
               document.getElementById('pmChatList').style.display = 'none';
+              document.getElementById('pmChatEmpty').style.display = 'flex';
             }
           });
         }
@@ -310,13 +339,23 @@
     const banInfo = await getBanStatus(dId);
     const lvl = userData.level || 1;
     const title = userData.title || "";
+    const globalMuteInfo = await getGlobalMuteStatus(uname);
 
     let banHtml = "";
     if (banInfo.banned) {
-      banHtml = `
-        <div style="background:rgba(255,59,48,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,59,48,0.6); margin-bottom:15px; animation: pulse 2s infinite;">
-          <p style="color:#ff453a; font-weight:bold; font-size:15px; margin-bottom:6px;">⚠️ 警告：设备已被封禁</p>
-          <p style="color:#fff; font-size:13px;">封禁原因：${escapeHtml(banInfo.reason)}</p>
+      banHtml += `
+        <div style="background:rgba(255,59,48,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,59,48,0.6); margin-bottom:12px;">
+          <p style="color:#ff453a; font-weight:bold; font-size:14px; margin-bottom:4px;">🚫 设备已封禁</p>
+          <p style="color:#fff; font-size:12px;">原因：${escapeHtml(banInfo.reason)}</p>
+        </div>
+      `;
+    }
+    if (globalMuteInfo.muted) {
+      let remainText = globalMuteInfo.remain > 315360000000 ? "永久" : Math.ceil(globalMuteInfo.remain / 60000) + " 分钟";
+      banHtml += `
+        <div style="background:rgba(255,149,0,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,149,0,0.6); margin-bottom:12px;">
+          <p style="color:#ff9500; font-weight:bold; font-size:14px; margin-bottom:4px;">🤐 全网禁言中</p>
+          <p style="color:#fff; font-size:12px;">剩余：${remainText}</p>
         </div>
       `;
     }
@@ -329,15 +368,11 @@
           账号：<span style="color:#fff;font-weight:bold;">${escapeHtml(uname)}</span> (Lv.${lvl}) ${title ? `<span style="background:#ffd700;color:#000;padding:2px 6px;border-radius:6px;font-size:12px;">${escapeHtml(title)}</span>` : ''}
         </p>
         <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
-          状态：<span style="font-weight:bold;">${statusStr}</span>
-        </p>
-        <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
           密码：<span style="color:#ffd700;font-weight:bold;letter-spacing:1px;">${escapeHtml(plainPwd)}</span>
         </p>
         <p style="margin-bottom:12px;font-size:13px;word-break:break-all;color:rgba(255,255,255,0.7);">
           设备码：<span style="color:#00c6ff;font-weight:bold;">${escapeHtml(dId)}</span>
         </p>
-        ${userData.isAuthor ? '<p style="color:#ffd700;font-size:12px;margin-bottom:12px;">该账号是作者账号</p>' : ''}
         
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px;">
           <button class="btn-orange" onclick="changeLevel('${escapeAttr(uname)}', ${lvl})">修改等级</button>
@@ -347,11 +382,35 @@
         <button class="btn-purple" onclick="changeUserName('${escapeAttr(uname)}')">修改名字</button>
         <button class="btn-blue" onclick="changePass('${escapeAttr(uname)}')">修改密码</button>
         <button class="btn-red" onclick="deleteUser('${escapeAttr(uname)}')">强制注销</button>
+        
         <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:15px;padding-top:15px;">
           <button class="btn-dark-red" onclick="banDevice('${escapeAttr(dId)}')">🚫 封禁该设备</button>
           <button class="btn-green" onclick="unbanDevice('${escapeAttr(dId)}')">✅ 解除封禁</button>
         </div>
+
+        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:15px;padding-top:15px;">
+          <button class="btn-orange" onclick="muteGlobal('${escapeAttr(uname)}')">🤐 全网禁言</button>
+          <button class="btn-green" onclick="unmuteGlobal('${escapeAttr(uname)}')">🔊 解除全网禁言</button>
+        </div>
       </div>`;
+  };
+
+  window.muteGlobal = function(uname) {
+    const timeStr = prompt(`全网禁言【${uname}】多久？\n1m / 1h / 1d / 1e+99d（永久）`);
+    if (!timeStr) return;
+    const ms = parseTimeInput(timeStr);
+    if (ms === 0) return alert("时间格式错误");
+    set(ref(db, 'global_muted/' + uname), Date.now() + ms).then(() => {
+      alert(`✅ 【${uname}】已被全网禁言！`);
+      manageUser(uname, allUsersData[uname], true);
+    });
+  };
+
+  window.unmuteGlobal = function(uname) {
+    remove(ref(db, 'global_muted/' + uname)).then(() => {
+      alert(`✅ 【${uname}】已解除全网禁言！`);
+      manageUser(uname, allUsersData[uname], true);
+    });
   };
 
   window.changeLevel = function(uname, currentLvl) {
@@ -909,13 +968,12 @@
     box.scrollTop = box.scrollHeight;
   }
 
-  // ==================== 私聊监控核心逻辑 ====================
   window.openPrivateMonitor = function(roomId, u1, u2) {
     currentPrivateRoomId = roomId;
     document.getElementById('pmChatTitle').innerText = `正在监控: ${u1} ↔ ${u2}`;
     document.getElementById('pmChatList').style.display = 'flex';
+    document.getElementById('pmChatEmpty').style.display = 'none';
     
-    // 重新渲染左侧列表以高亮当前选中
     renderPrivateRooms();
 
     if (privateSpyUnsub) { privateSpyUnsub(); privateSpyUnsub = null; }
@@ -1126,22 +1184,6 @@
         closeActionModal();
       });
     });
-  };
-
-  window.parseTimeInput = function (input) {
-    if (!input) return 0;
-    input = input.trim().toLowerCase();
-    if (input.includes('e+') || input.includes('e')) {
-      const n = parseFloat(input.replace(/[^0-9.e+]/g, ''));
-      if (isNaN(n) || n > 1e+10) return 3153600000000;
-      return n * 86400000;
-    }
-    let n = parseFloat(input);
-    if (isNaN(n)) n = 0;
-    if (input.includes('m')) return n * 60000;
-    if (input.includes('h')) return n * 3600000;
-    if (input.includes('d')) return n * 86400000;
-    return n * 60000;
   };
 
   window.muteTarget = function () {
@@ -1495,8 +1537,6 @@
     <div class="list-container" id="violationsView" style="display:none;"><div id="violationsList"></div></div>
     <div class="list-container" id="reportsView" style="display:none;"><div id="reportsList"></div></div>
     <div class="list-container" id="plazaView" style="display:none;"><div id="plazaList"></div></div>
-    
-    <!-- 私聊房间列表 -->
     <div class="list-container" id="privateListView" style="display:none;"><div id="privateRoomList"></div></div>
   </div>
 
@@ -1532,7 +1572,6 @@
       <div id="userManageContent"></div>
     </div>
 
-    <!-- 私聊监控界面 -->
     <div id="privateView">
       <div id="pmChatList">
         <div class="chat-header" style="background:rgba(0,0,0,0.8); border-bottom:1px solid #00c6ff; padding:15px;">
@@ -1544,7 +1583,6 @@
           <button onclick="sendPmMsg()" style="padding:0 20px; border-radius:10px; background:#00c6ff; color:#fff; border:none; font-weight:bold;">插话</button>
         </div>
       </div>
-      <!-- 默认提示 -->
       <div id="pmChatEmpty" style="flex:1; display:flex; justify-content:center; align-items:center; color:rgba(255,255,255,0.3); font-size:14px;">
         点击左侧私聊房间查看记录
       </div>
