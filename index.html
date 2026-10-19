@@ -277,6 +277,9 @@
       const div = document.createElement('div');
       div.className = 'list-item';
       div.style.borderLeftColor = '#00c6ff';
+      div.style.userSelect = 'none';
+      div.style.webkitUserSelect = 'none';
+      
       if (room.roomId === currentPrivateRoomId) {
         div.style.background = 'rgba(0,198,255,0.2)';
       }
@@ -309,6 +312,7 @@
         isMoved = false;
         touchTimer = setTimeout(() => {
           if (!isMoved) {
+            if (navigator.vibrate) navigator.vibrate(50);
             if (confirm(`确定要彻底清空并删除这段私聊记录吗？`)) {
               remove(ref(db, 'private_msgs/' + room.roomId)).then(() => alert("记录已删除"));
             }
@@ -470,6 +474,8 @@
       div.className = 'list-item user-item';
       div.style.borderLeftColor = '#ff3b30';
       div.style.cursor = 'pointer';
+      div.style.userSelect = 'none';
+      div.style.webkitUserSelect = 'none';
       
       div.innerHTML = `
         <span style="color:#ff3b30;font-weight:bold;">⚠️ ${escapeHtml(v.name)}</span> (违规 ${v.count} 次)<br>
@@ -499,6 +505,7 @@
         isMoved = false;
         touchTimer = setTimeout(() => {
           if (!isMoved) {
+            if (navigator.vibrate) navigator.vibrate(50);
             if (confirm(`确定要删除【${v.name}】的违规记录吗？`)) {
               remove(ref(db, 'violations/' + v.name)).then(() => alert("记录已删除"));
             }
@@ -536,6 +543,8 @@
       div.className = 'list-item user-item';
       div.style.borderLeftColor = '#ff9500';
       div.style.cursor = 'pointer';
+      div.style.userSelect = 'none';
+      div.style.webkitUserSelect = 'none';
       
       div.innerHTML = `
         <span style="color:#ff9500;font-weight:bold;">🚨 被举报人: ${escapeHtml(r.target)}</span><br>
@@ -571,6 +580,7 @@
         isMoved = false;
         touchTimer = setTimeout(() => {
           if (!isMoved) {
+            if (navigator.vibrate) navigator.vibrate(50);
             if (confirm(`确定要删除这条举报记录吗？`)) {
               remove(ref(db, 'reports/' + r.key)).then(() => alert("记录已删除"));
             }
@@ -607,6 +617,9 @@
       const div = document.createElement('div');
       div.className = 'list-item user-item';
       div.style.borderLeftColor = p.isAuthor ? '#ffd700' : '#ff00ff';
+      div.style.userSelect = 'none';
+      div.style.webkitUserSelect = 'none';
+      
       div.innerHTML = `
         <span style="color:${p.isAuthor ? '#ffd700' : '#ff00ff'};font-weight:bold;">📢 ${escapeHtml(p.sender)}</span> (Lv.${p.level||1}) ${p.title ? `<span style="background:#ffd700;color:#000;padding:1px 4px;border-radius:4px;font-size:10px;">${escapeHtml(p.title)}</span>`:''}<br>
         <span style="font-size:13px;color:#ddd;margin-top:5px;display:block;">${escapeHtml(p.text)}</span>
@@ -626,6 +639,7 @@
         isMoved = false;
         touchTimer = setTimeout(() => {
           if (!isMoved) {
+            if (navigator.vibrate) navigator.vibrate(50);
             if (confirm(`确定要删除【${p.sender}】的这条广场动态吗？`)) {
               remove(ref(db, 'plaza/' + p.key)).then(() => alert("动态已删除"));
             }
@@ -656,13 +670,21 @@
         for (let gid in data) {
           const div = document.createElement('div');
           div.className = 'list-item';
+          div.style.userSelect = 'none';
+          div.style.webkitUserSelect = 'none';
+          
           div.innerHTML = `
             💬 ${escapeHtml(data[gid].name || '无群名')}<br>
             <span style="font-size:10px;color:rgba(255,255,255,0.5);">
               ID: ${gid} | 群主: ${escapeHtml(data[gid].creator || '未知')}
             </span>`;
+
           let lastClick = 0;
-          div.onclick = function () {
+          div.onclick = function (e) {
+            if (div.dataset.longpressed === 'true') {
+              div.dataset.longpressed = 'false';
+              return;
+            }
             const now = Date.now();
             if (now - lastClick < 350) {
               deleteGroup(gid, data[gid].name);
@@ -681,6 +703,36 @@
             }
             lastClick = now;
           };
+
+          let touchTimer = null;
+          div.addEventListener('touchstart', (e) => {
+            div.dataset.longpressed = 'false';
+            if (touchTimer) clearTimeout(touchTimer);
+            
+            touchTimer = setTimeout(() => {
+              div.dataset.longpressed = 'true';
+              if (navigator.vibrate) navigator.vibrate(50);
+              deleteGroup(gid, data[gid].name);
+            }, 800);
+          }, { passive: true });
+
+          div.addEventListener('touchmove', () => {
+            if (touchTimer) clearTimeout(touchTimer);
+            div.dataset.longpressed = 'false';
+          }, { passive: true });
+
+          div.addEventListener('touchend', (e) => {
+            if (touchTimer) clearTimeout(touchTimer);
+            if (div.dataset.longpressed === 'true') {
+              e.preventDefault();
+            }
+          }, { passive: false });
+
+          div.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            deleteGroup(gid, data[gid].name);
+          });
+
           listEl.appendChild(div);
         }
       } else {
@@ -1126,7 +1178,6 @@
     const violationBtn = document.getElementById('manualViolationBtn');
     if (violationBtn) {
       violationBtn.style.display = 'block';
-      // onclick 已经在 HTML 里绑定了，不需要在这里重新赋值
     }
 
     get(ref(db, `group_info/${currentGroupId}`)).then(groupSnap => {
@@ -1514,13 +1565,13 @@
   }
 
   #usersView { display:none; flex-direction:column; padding:20px; flex:1; overflow-y:auto; }
-  #userManageTitle { font-size:20px; color:#f1c40f; margin-bottom:20px; font-weight:800; }
+  #userManageTitle { font-size:20px:; color:#f1c40f; margin-bottom:20px;100 font-weight:800; }
   .user-manage-card {
     background:rgba(30,30,30,0.8); padding:20px; border-radius:20px;
     border:1px solid rgba(255,255,255,0.1); backdrop-filter:blur(20px);
   }
   .user-manage-card button {
-    width:100%; padding:14px; border-radius:12px; border:none;
+    width%; padding:14px; border-radius:12px; border:none;
     font-weight:bold; font-size:15px; cursor:pointer; margin-bottom:12px;
   }
   .btn-purple { background:rgba(155,89,182,0.2); color:#9b59b6; border:1px solid rgba(155,89,182,0.4); }
@@ -1653,13 +1704,11 @@
     <div class="action-box">
       <h3>对 <span id="modalTargetName" style="color:#0a84ff;"></span> 操作</h3>
       
-      <!-- 私信按钮 -->
       <button id="btnStartPM" style="background:linear-gradient(135deg,#00c6ff,#0072ff);color:#fff;border:none;font-weight:bold;display:none;">💬 发私信 / 加好友</button>
       
       <button id="btnSetAdmin" style="background:rgba(0,122,255,0.2);color:#0a84ff;border:1px solid rgba(0,122,255,0.4);">设为管理员</button>
       <button id="btnMute" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);">禁言该用户</button>
       
-      <!-- 改成了 添加进违规 -->
       <button id="manualViolationBtn" onclick="manualViolation()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;display:none;">⚠️ 添加进违规</button>
       
       <button onclick="kickTarget()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);">踢出群聊</button>
