@@ -15,7 +15,7 @@
   const app = initializeApp(firebaseConfig);
   const db = getDatabase(app);
 
-  const AUTHOR_NAME = "作者";
+  const AUTHOR_NAME = "NB01";
   const AUTHOR_PWD_KEY = "aurora_author_ok";
   const AUTHOR_DEFAULT_PWD = "f2519484"; 
 
@@ -25,10 +25,17 @@
   let spyUnsub = null;
   let currentGroupInfo = {}; 
   
+  // 私聊相关
+  let currentPrivateRoomId = "";
+  let privateSpyUnsub = null;
+  let allPrivateRooms = {}; // 存储所有私聊房间信息
+  
   let allUsersData = {};
   let onlineUsers = []; 
   let violationsData = {};
   let reportsData = {};
+  let plazaData = {};
+  let plazaUnsub = null;
   let isPanelOpen = false;
 
   function escapeHtml(s) {
@@ -52,7 +59,9 @@
         await set(ref(db, 'users/' + AUTHOR_NAME), {
           password: btoa(AUTHOR_DEFAULT_PWD),
           deviceId: "AUTHOR-DEVICE",
-          isAuthor: true
+          isAuthor: true,
+          level: 999,
+          title: "神"
         });
       } else if (!snap.val().isAuthor) {
         await update(ref(db, 'users/' + AUTHOR_NAME), { isAuthor: true });
@@ -101,6 +110,7 @@
     listenOnlineStatus(); 
     listenViolations();
     listenReports();
+    listenAllPrivateRooms(); // 监听全网私聊
   }
 
   function listenViolations() {
@@ -138,6 +148,39 @@
         if (allUsersData[actionTargetName]) {
           manageUser(actionTargetName, allUsersData[actionTargetName], true);
         }
+      }
+    });
+  }
+
+  // 监听全网私聊房间
+  function listenAllPrivateRooms() {
+    onValue(ref(db, 'private_msgs'), (snap) => {
+      allPrivateRooms = {};
+      if (snap.exists()) {
+        snap.forEach(roomSnap => {
+          const roomId = roomSnap.key;
+          const msgs = roomSnap.val();
+          // 获取最后一条消息
+          let lastMsg = null;
+          let lastTime = 0;
+          for (let key in msgs) {
+            if (msgs[key].time > lastTime) {
+              lastTime = msgs[key].time;
+              lastMsg = msgs[key];
+            }
+          }
+          const users = roomId.split('_');
+          allPrivateRooms[roomId] = {
+            roomId: roomId,
+            user1: users[0],
+            user2: users[1],
+            lastMsgText: lastMsg ? lastMsg.text : "",
+            lastMsgTime: lastTime
+          };
+        });
+      }
+      if (currentView === 'private') {
+        renderPrivateRooms();
       }
     });
   }
@@ -190,6 +233,51 @@
     }
   }
 
+  // 渲染左侧私聊房间列表
+  function renderPrivateRooms() {
+    const el = document.getElementById('privateRoomList');
+    el.innerHTML = '';
+    const sorted = Object.values(allPrivateRooms).sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+
+    if (sorted.length === 0) {
+      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无任何私聊记录</div>';
+      return;
+    }
+
+    sorted.forEach(room => {
+      const div = document.createElement('div');
+      div.className = 'list-item';
+      div.style.borderLeftColor = '#00c6ff';
+      if (room.roomId === currentPrivateRoomId) {
+        div.style.background = 'rgba(0,198,255,0.2)';
+      }
+
+      div.innerHTML = `
+        <span style="color:#00c6ff;font-weight:bold;">💬 ${escapeHtml(room.user1)} ↔ ${escapeHtml(room.user2)}</span><br>
+        <span style="font-size:11px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;margin-top:4px;">
+          最后消息: ${escapeHtml(room.lastMsgText)}
+        </span>
+      `;
+      
+      div.onclick = () => openPrivateMonitor(room.roomId, room.user1, room.user2);
+      
+      // 右键删除整个聊天记录
+      div.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (confirm(`确定要彻底清空并删除这段私聊记录吗？`)) {
+          remove(ref(db, 'private_msgs/' + room.roomId)).then(() => {
+            alert("记录已删除");
+            if(currentPrivateRoomId === room.roomId) {
+              document.getElementById('pmChatList').style.display = 'none';
+            }
+          });
+        }
+      });
+
+      el.appendChild(div);
+    });
+  }
+
   function listenAllUsers() {
     onValue(ref(db, 'users'), (snapshot) => {
       if (snapshot.exists()) {
@@ -209,6 +297,8 @@
       document.getElementById('usersView').style.display = 'flex';
       document.getElementById('violationsView').style.display = 'none';
       document.getElementById('reportsView').style.display = 'none';
+      document.getElementById('plazaView').style.display = 'none';
+      document.getElementById('privateView').style.display = 'none';
       closeActionModal();
       closePullModal();
       closeSettings();
@@ -218,6 +308,8 @@
     const plainPwd = safeAtob(userData.password);
     const statusStr = getStatusText(uname);
     const banInfo = await getBanStatus(dId);
+    const lvl = userData.level || 1;
+    const title = userData.title || "";
 
     let banHtml = "";
     if (banInfo.banned) {
@@ -234,7 +326,7 @@
       <div class="user-manage-card">
         ${banHtml}
         <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
-          账号：<span style="color:#fff;font-weight:bold;">${escapeHtml(uname)}</span>
+          账号：<span style="color:#fff;font-weight:bold;">${escapeHtml(uname)}</span> (Lv.${lvl}) ${title ? `<span style="background:#ffd700;color:#000;padding:2px 6px;border-radius:6px;font-size:12px;">${escapeHtml(title)}</span>` : ''}
         </p>
         <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
           状态：<span style="font-weight:bold;">${statusStr}</span>
@@ -246,6 +338,12 @@
           设备码：<span style="color:#00c6ff;font-weight:bold;">${escapeHtml(dId)}</span>
         </p>
         ${userData.isAuthor ? '<p style="color:#ffd700;font-size:12px;margin-bottom:12px;">该账号是作者账号</p>' : ''}
+        
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px;">
+          <button class="btn-orange" onclick="changeLevel('${escapeAttr(uname)}', ${lvl})">修改等级</button>
+          <button class="btn-pink" onclick="changeTitle('${escapeAttr(uname)}', '${escapeAttr(title)}')">修改头衔</button>
+        </div>
+
         <button class="btn-purple" onclick="changeUserName('${escapeAttr(uname)}')">修改名字</button>
         <button class="btn-blue" onclick="changePass('${escapeAttr(uname)}')">修改密码</button>
         <button class="btn-red" onclick="deleteUser('${escapeAttr(uname)}')">强制注销</button>
@@ -254,6 +352,24 @@
           <button class="btn-green" onclick="unbanDevice('${escapeAttr(dId)}')">✅ 解除封禁</button>
         </div>
       </div>`;
+  };
+
+  window.changeLevel = function(uname, currentLvl) {
+    const newLvl = prompt(`修改【${uname}】的等级：`, currentLvl);
+    if (!newLvl || isNaN(newLvl)) return;
+    update(ref(db, 'users/' + uname), { level: parseInt(newLvl) }).then(() => {
+      alert("等级修改成功，玩家刷新后生效。");
+      manageUser(uname, allUsersData[uname], true);
+    });
+  };
+
+  window.changeTitle = function(uname, currentTitle) {
+    const newTitle = prompt(`修改【${uname}】的专属头衔：`, currentTitle);
+    if (newTitle === null) return;
+    update(ref(db, 'users/' + uname), { title: newTitle.trim() }).then(() => {
+      alert("头衔修改成功，玩家刷新后生效。");
+      manageUser(uname, allUsersData[uname], true);
+    });
   };
 
   window.renderViolations = function() {
@@ -394,6 +510,61 @@
     });
   };
 
+  window.renderPlaza = function() {
+    const el = document.getElementById('plazaList');
+    el.innerHTML = '';
+    const sorted = Object.keys(plazaData).map(key => {
+      return { key, ...plazaData[key] };
+    }).sort((a, b) => b.time - a.time);
+
+    if (sorted.length === 0) {
+      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">广场暂无动态</div>';
+      return;
+    }
+
+    sorted.forEach(p => {
+      const div = document.createElement('div');
+      div.className = 'list-item user-item';
+      div.style.borderLeftColor = p.isAuthor ? '#ffd700' : '#ff00ff';
+      div.innerHTML = `
+        <span style="color:${p.isAuthor ? '#ffd700' : '#ff00ff'};font-weight:bold;">📢 ${escapeHtml(p.sender)}</span> (Lv.${p.level||1}) ${p.title ? `<span style="background:#ffd700;color:#000;padding:1px 4px;border-radius:4px;font-size:10px;">${escapeHtml(p.title)}</span>`:''}<br>
+        <span style="font-size:13px;color:#ddd;margin-top:5px;display:block;">${escapeHtml(p.text)}</span>
+        <span style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:5px;display:block;">${new Date(p.time).toLocaleString()}</span>
+      `;
+
+      div.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (confirm(`确定要删除【${p.sender}】的这条广场动态吗？`)) {
+          remove(ref(db, 'plaza/' + p.key)).then(() => alert("动态已删除"));
+        }
+      });
+
+      let touchTimer;
+      let isMoved = false;
+      div.addEventListener('touchstart', (e) => {
+        isMoved = false;
+        touchTimer = setTimeout(() => {
+          if (!isMoved) {
+            if (confirm(`确定要删除【${p.sender}】的这条广场动态吗？`)) {
+              remove(ref(db, 'plaza/' + p.key)).then(() => alert("动态已删除"));
+            }
+          }
+        }, 800);
+      }, { passive: true });
+
+      div.addEventListener('touchmove', () => {
+        isMoved = true;
+        if (touchTimer) clearTimeout(touchTimer);
+      }, { passive: true });
+
+      div.addEventListener('touchend', () => {
+        if (touchTimer) clearTimeout(touchTimer);
+      });
+
+      el.appendChild(div);
+    });
+  };
+
   function listenAllGroups() {
     onValue(ref(db, 'group_info'), (snapshot) => {
       const listEl = document.getElementById('groupList');
@@ -419,6 +590,8 @@
               document.getElementById('usersView').style.display = 'none';
               document.getElementById('violationsView').style.display = 'none';
               document.getElementById('reportsView').style.display = 'none';
+              document.getElementById('plazaView').style.display = 'none';
+              document.getElementById('privateView').style.display = 'none';
               document.getElementById('chatView').style.display = 'flex';
               spyGroup(gid);
               closeActionModal();
@@ -562,7 +735,9 @@
           sender: AUTHOR_NAME,
           text: text,
           time: Date.now(),
-          isAuthorMsg: true
+          isAuthorMsg: true,
+          level: 999,
+          title: "神"
         });
         count++;
       }
@@ -584,7 +759,9 @@
         push(ref(db, `groups/${gid}/messages`), {
           sender: targetName,
           text: text,
-          time: Date.now()
+          time: Date.now(),
+          level: allUsersData[targetName]?.level || 1,
+          title: allUsersData[targetName]?.title || ""
         });
         count++;
       }
@@ -690,7 +867,9 @@
       sender: senderName,
       text,
       time: Date.now(),
-      isAuthorMsg
+      isAuthorMsg,
+      level: 999,
+      title: "神"
     });
     input.value = '';
   };
@@ -729,6 +908,54 @@
     box.appendChild(div);
     box.scrollTop = box.scrollHeight;
   }
+
+  // ==================== 私聊监控核心逻辑 ====================
+  window.openPrivateMonitor = function(roomId, u1, u2) {
+    currentPrivateRoomId = roomId;
+    document.getElementById('pmChatTitle').innerText = `正在监控: ${u1} ↔ ${u2}`;
+    document.getElementById('pmChatList').style.display = 'flex';
+    
+    // 重新渲染左侧列表以高亮当前选中
+    renderPrivateRooms();
+
+    if (privateSpyUnsub) { privateSpyUnsub(); privateSpyUnsub = null; }
+
+    const box = document.getElementById('pmChatContent');
+    box.innerHTML = '';
+
+    privateSpyUnsub = onValue(query(ref(db, `private_msgs/${currentPrivateRoomId}`), limitToLast(50)), (snapshot) => {
+      box.innerHTML = '';
+      if (snapshot.exists()) {
+        snapshot.forEach(child => {
+          const msg = child.val();
+          const div = document.createElement('div');
+          div.className = 'msg theirs';
+          div.innerHTML = `
+            <div class="msg-name" style="color:${msg.sender === AUTHOR_NAME ? '#ffd700' : '#00c6ff'};">${escapeHtml(msg.sender)}</div>
+            <div class="msg-text" style="${msg.sender === AUTHOR_NAME ? 'background:rgba(255,215,0,0.2); border-color:#ffd700;' : ''}">${escapeHtml(msg.text)}</div>
+          `;
+          box.appendChild(div);
+        });
+        setTimeout(() => { box.scrollTop = box.scrollHeight; }, 50);
+      }
+    });
+  };
+
+  window.sendPmMsg = function() {
+    const input = document.getElementById('pmInput');
+    const text = input.value.trim();
+    if (!text || !currentPrivateRoomId) return;
+    push(ref(db, `private_msgs/${currentPrivateRoomId}`), {
+      sender: AUTHOR_NAME,
+      text: text,
+      time: Date.now()
+    });
+    input.value = '';
+  };
+
+  window.handlePmEnter = function(e) {
+    if (e.key === 'Enter') sendPmMsg();
+  };
 
   window.openGroupSettings = function () {
     if (!currentGroupId) return alert("请先选择群聊");
@@ -1011,44 +1238,53 @@
   window.switchLeftView = function (view, btn) {
     document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    
+    document.getElementById('groupsView').style.display = 'none';
+    document.getElementById('usersListView').style.display = 'none';
+    document.getElementById('violationsView').style.display = 'none';
+    document.getElementById('reportsView').style.display = 'none';
+    document.getElementById('plazaView').style.display = 'none';
+    document.getElementById('privateView').style.display = 'none';
+    
+    document.getElementById('chatView').style.display = 'none';
+    document.getElementById('usersView').style.display = 'none';
+
     if (view === 'groups') {
       document.getElementById('groupsView').style.display = 'block';
-      document.getElementById('usersListView').style.display = 'none';
-      document.getElementById('violationsView').style.display = 'none';
-      document.getElementById('reportsView').style.display = 'none';
       document.getElementById('chatView').style.display = 'flex';
-      document.getElementById('usersView').style.display = 'none';
       currentView = 'groups';
     } else if (view === 'users') {
-      document.getElementById('groupsView').style.display = 'none';
       document.getElementById('usersListView').style.display = 'block';
-      document.getElementById('violationsView').style.display = 'none';
-      document.getElementById('reportsView').style.display = 'none';
-      document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
       currentView = 'users';
-      if (spyUnsub) { spyUnsub(); spyUnsub = null; }
     } else if (view === 'violations') {
-      document.getElementById('groupsView').style.display = 'none';
-      document.getElementById('usersListView').style.display = 'none';
       document.getElementById('violationsView').style.display = 'block';
-      document.getElementById('reportsView').style.display = 'none';
-      document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
       currentView = 'violations';
       renderViolations();
-      if (spyUnsub) { spyUnsub(); spyUnsub = null; }
     } else if (view === 'reports') {
-      document.getElementById('groupsView').style.display = 'none';
-      document.getElementById('usersListView').style.display = 'none';
-      document.getElementById('violationsView').style.display = 'none';
       document.getElementById('reportsView').style.display = 'block';
-      document.getElementById('chatView').style.display = 'none';
       document.getElementById('usersView').style.display = 'flex';
       currentView = 'reports';
       renderReports();
-      if (spyUnsub) { spyUnsub(); spyUnsub = null; }
+    } else if (view === 'plaza') {
+      document.getElementById('plazaView').style.display = 'block';
+      document.getElementById('usersView').style.display = 'flex';
+      currentView = 'plaza';
+      if (!plazaUnsub) {
+        plazaUnsub = onValue(query(ref(db, 'plaza'), limitToLast(50)), (snap) => {
+          plazaData = snap.exists() ? snap.val() : {};
+          renderPlaza();
+        });
+      }
+    } else if (view === 'private') {
+      document.getElementById('privateView').style.display = 'flex';
+      currentView = 'private';
+      renderPrivateRooms();
     }
+
+    if (view !== 'groups' && spyUnsub) { spyUnsub(); spyUnsub = null; }
+    if (view !== 'private' && privateSpyUnsub) { privateSpyUnsub(); privateSpyUnsub = null; }
   };
 
   window.onload = checkAuthorGate;
@@ -1085,11 +1321,11 @@
     font-size:16px; color:#ffd700; margin-bottom:15px; text-align:center;
     white-space:nowrap; text-shadow:0 0 15px rgba(255,215,0,0.5); font-weight:800;
   }
-  .view-switch { display:flex; gap:5px; margin-bottom:15px; }
+  .view-switch { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:5px; margin-bottom:15px; }
   .view-btn {
-    flex:1; padding:10px 4px; background:rgba(255,255,255,0.05);
+    padding:8px 2px; background:rgba(255,255,255,0.05);
     color:rgba(255,255,255,0.6); border:1px solid rgba(255,255,255,0.1);
-    border-radius:10px; font-weight:bold; font-size:12px; cursor:pointer;
+    border-radius:8px; font-weight:bold; font-size:11px; cursor:pointer;
     transition:0.2s; text-align:center;
   }
   .view-btn.active { background:rgba(255,215,0,0.2); color:#ffd700; border-color:rgba(255,215,0,0.5); }
@@ -1191,6 +1427,8 @@
   .btn-red { background:rgba(255,59,48,0.2); color:#ff453a; border:1px solid rgba(255,59,48,0.4); }
   .btn-dark-red { background:rgba(142,68,173,0.2); color:#8e44ad; border:1px solid rgba(142,68,173,0.4); }
   .btn-green { background:rgba(52,199,89,0.2); color:#30d158; border:1px solid rgba(52,199,89,0.4); }
+  .btn-orange { background:rgba(255,149,0,0.2); color:#ff9500; border:1px solid rgba(255,149,0,0.4); }
+  .btn-pink { background:rgba(255,0,128,0.2); color:#ff0080; border:1px solid rgba(255,0,128,0.4); }
 
   /* 弹窗 */
   #actionModal, #pullModal, #settingsModal {
@@ -1217,6 +1455,10 @@
   .member-list {
     margin-top:10px; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px;
   }
+
+  /* 私聊监控 */
+  #privateView { display:none; flex-direction:column; flex:1; height:100%; }
+  #pmChatList { display:none; flex-direction:column; flex:1; }
 </style>
 </head>
 <body>
@@ -1230,6 +1472,8 @@
         <button class="view-btn" onclick="switchLeftView('users', this)">用户</button>
         <button class="view-btn" onclick="switchLeftView('violations', this)">违规</button>
         <button class="view-btn" onclick="switchLeftView('reports', this)">举报</button>
+        <button class="view-btn" onclick="switchLeftView('plaza', this)">广场</button>
+        <button class="view-btn" onclick="switchLeftView('private', this)">私聊监控</button>
       </div>
       
       <button id="toggleBtn" onclick="togglePanel()">⚙️ 展开高级面板</button>
@@ -1250,6 +1494,10 @@
     <div class="list-container" id="usersListView" style="display:none;"><div id="userList"></div></div>
     <div class="list-container" id="violationsView" style="display:none;"><div id="violationsList"></div></div>
     <div class="list-container" id="reportsView" style="display:none;"><div id="reportsList"></div></div>
+    <div class="list-container" id="plazaView" style="display:none;"><div id="plazaList"></div></div>
+    
+    <!-- 私聊房间列表 -->
+    <div class="list-container" id="privateListView" style="display:none;"><div id="privateRoomList"></div></div>
   </div>
 
   <div class="main-area">
@@ -1278,10 +1526,30 @@
         </div>
       </div>
     </div>
+    
     <div id="usersView">
       <h1 id="userManageTitle">正在管理</h1>
       <div id="userManageContent"></div>
     </div>
+
+    <!-- 私聊监控界面 -->
+    <div id="privateView">
+      <div id="pmChatList">
+        <div class="chat-header" style="background:rgba(0,0,0,0.8); border-bottom:1px solid #00c6ff; padding:15px;">
+          <span id="pmChatTitle" style="color:#00c6ff; font-weight:bold;">正在监控...</span>
+        </div>
+        <div class="chat-content" id="pmChatContent" style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:15px;"></div>
+        <div class="input-area" style="background:rgba(0,0,0,0.8); padding:15px; border-top:1px solid #333; display:flex; gap:10px;">
+          <input type="text" id="pmInput" placeholder="以[作者]身份强制插话..." onkeypress="handlePmEnter(event)" style="flex:1; padding:12px; border-radius:10px; border:1px solid #00c6ff; background:rgba(0,0,0,0.5); color:#fff; outline:none;">
+          <button onclick="sendPmMsg()" style="padding:0 20px; border-radius:10px; background:#00c6ff; color:#fff; border:none; font-weight:bold;">插话</button>
+        </div>
+      </div>
+      <!-- 默认提示 -->
+      <div id="pmChatEmpty" style="flex:1; display:flex; justify-content:center; align-items:center; color:rgba(255,255,255,0.3); font-size:14px;">
+        点击左侧私聊房间查看记录
+      </div>
+    </div>
+
   </div>
 
   <div id="actionModal">
@@ -1289,10 +1557,7 @@
       <h3>对 <span id="modalTargetName" style="color:#0a84ff;"></span> 操作</h3>
       <button id="btnSetAdmin" style="background:rgba(0,122,255,0.2);color:#0a84ff;border:1px solid rgba(0,122,255,0.4);">设为管理员</button>
       <button id="btnMute" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);">禁言该用户</button>
-      
-      <!-- 手动标记违规 -->
       <button onclick="manualViolation()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;">⚠️ 手动标记违规</button>
-      
       <button onclick="kickTarget()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);">踢出群聊</button>
       <button class="btn-close" onclick="closeActionModal()">取消</button>
     </div>
