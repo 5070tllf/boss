@@ -74,8 +74,8 @@
           password: btoa(AUTHOR_DEFAULT_PWD),
           deviceId: "AUTHOR-DEVICE",
           isAuthor: true,
-          level: 999,
-          title: "神"
+          level: 5201314,
+          title: "作者"
         });
       } else if (!snap.val().isAuthor) {
         await update(ref(db, 'users/' + AUTHOR_NAME), { isAuthor: true });
@@ -1113,6 +1113,22 @@
     actionTargetName = targetName;
     document.getElementById('modalTargetName').innerText = targetName;
 
+    // 控制作者专属的私信和违规按钮显示
+    const pmBtn = document.getElementById('btnStartPM');
+    if (pmBtn) {
+      pmBtn.style.display = 'block';
+      pmBtn.onclick = () => {
+        closeActionModal();
+        alert("请到左侧【私聊监控】列表中寻找与该用户的聊天房间进行插话。");
+      };
+    }
+
+    const violationBtn = document.getElementById('manualViolationBtn');
+    if (violationBtn) {
+      violationBtn.style.display = 'block';
+      // onclick 已经在 HTML 里绑定了，不需要在这里重新赋值
+    }
+
     get(ref(db, `group_info/${currentGroupId}`)).then(groupSnap => {
       if (!groupSnap.exists()) return;
       const info = groupSnap.val();
@@ -1636,10 +1652,18 @@
   <div id="actionModal">
     <div class="action-box">
       <h3>对 <span id="modalTargetName" style="color:#0a84ff;"></span> 操作</h3>
+      
+      <!-- 私信按钮 -->
+      <button id="btnStartPM" style="background:linear-gradient(135deg,#00c6ff,#0072ff);color:#fff;border:none;font-weight:bold;display:none;">💬 发私信 / 加好友</button>
+      
       <button id="btnSetAdmin" style="background:rgba(0,122,255,0.2);color:#0a84ff;border:1px solid rgba(0,122,255,0.4);">设为管理员</button>
       <button id="btnMute" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);">禁言该用户</button>
-      <button onclick="manualViolation()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;">⚠️ 手动标记违规</button>
+      
+      <!-- 改成了 添加进违规 -->
+      <button id="manualViolationBtn" onclick="manualViolation()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;display:none;">⚠️ 添加进违规</button>
+      
       <button onclick="kickTarget()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);">踢出群聊</button>
+      
       <button class="btn-close" onclick="closeActionModal()">取消</button>
     </div>
   </div>
