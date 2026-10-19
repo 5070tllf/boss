@@ -303,6 +303,28 @@
         }
       });
 
+      let touchTimer;
+      let isMoved = false;
+      div.addEventListener('touchstart', (e) => {
+        isMoved = false;
+        touchTimer = setTimeout(() => {
+          if (!isMoved) {
+            if (confirm(`确定要彻底清空并删除这段私聊记录吗？`)) {
+              remove(ref(db, 'private_msgs/' + room.roomId)).then(() => alert("记录已删除"));
+            }
+          }
+        }, 800);
+      }, { passive: true });
+
+      div.addEventListener('touchmove', () => {
+        isMoved = true;
+        if (touchTimer) clearTimeout(touchTimer);
+      }, { passive: true });
+
+      div.addEventListener('touchend', () => {
+        if (touchTimer) clearTimeout(touchTimer);
+      });
+
       el.appendChild(div);
     });
   }
@@ -1214,13 +1236,30 @@
 
   window.kickTarget = function () {
     if (!confirm(`确认踢出【${actionTargetName}】？`)) return;
-    set(ref(db, `groups/${currentGroupId}/kicked/${actionTargetName}`), true).then(() => {
-      push(ref(db, `groups/${currentGroupId}/messages`), {
-        sender: "📢 系统公告",
-        text: `${actionTargetName} 已被踢出`,
-        time: Date.now()
-      });
-      closeActionModal();
+    const gid = currentGroupId;
+    const target = actionTargetName;
+    get(ref(db, 'group_info/' + gid)).then(snap => {
+      if (!snap.exists()) return;
+      const info = snap.val();
+      const updates = {};
+      
+      const members = (info.members || []).filter(m => m !== target);
+      updates[`group_info/${gid}/members`] = members;
+      
+      const admins = (info.admins || []).filter(a => a !== target);
+      updates[`group_info/${gid}/admins`] = admins;
+      
+      updates[`group_info/${gid}/kicked/${target}`] = true;
+      updates[`groups/${gid}/muted/${target}`] = null;
+
+      update(ref(db), updates).then(() => {
+        push(ref(db, `groups/${gid}/messages`), {
+          sender: "📢 系统公告",
+          text: `${target} 已被踢出`,
+          time: Date.now()
+        });
+        closeActionModal();
+      }).catch(e => alert("踢人失败：" + e.message));
     });
   };
 
@@ -1281,15 +1320,18 @@
     document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     
+    // 隐藏所有左侧列表容器
     document.getElementById('groupsView').style.display = 'none';
     document.getElementById('usersListView').style.display = 'none';
     document.getElementById('violationsView').style.display = 'none';
     document.getElementById('reportsView').style.display = 'none';
     document.getElementById('plazaView').style.display = 'none';
-    document.getElementById('privateView').style.display = 'none';
+    document.getElementById('privateListView').style.display = 'none';
     
+    // 隐藏所有右侧主界面
     document.getElementById('chatView').style.display = 'none';
     document.getElementById('usersView').style.display = 'none';
+    document.getElementById('privateView').style.display = 'none';
 
     if (view === 'groups') {
       document.getElementById('groupsView').style.display = 'block';
@@ -1320,6 +1362,7 @@
         });
       }
     } else if (view === 'private') {
+      document.getElementById('privateListView').style.display = 'block';
       document.getElementById('privateView').style.display = 'flex';
       currentView = 'private';
       renderPrivateRooms();
