@@ -37,7 +37,7 @@
   let plazaUnsub = null;
   let isPanelOpen = false;
 
-  /* === 新增：密码显示状态（当前正在明文显示密码的用户名，null 表示全部打码） === */
+  // 密码显示状态（当前明文显示密码的用户名，null 表示全部打码）
   let revealedPasswordUser = null;
 
   function escapeHtml(s) {
@@ -78,10 +78,11 @@
           deviceId: "AUTHOR-DEVICE",
           isAuthor: true,
           level: 5201314,
-          title: "作者"
+          title: "作者",
+          status: "approved"
         });
       } else if (!snap.val().isAuthor) {
-        await update(ref(db, 'users/' + AUTHOR_NAME), { isAuthor: true });
+        await update(ref(db, 'users/' + AUTHOR_NAME), { isAuthor: true, status: "approved" });
       }
     } catch (e) { console.warn(e); }
   }
@@ -256,6 +257,13 @@
     });
   }
 
+  function getStatusBadge(uData) {
+    const st = uData.status;
+    if (st === 'pending') return '<span style="background:rgba(255,149,0,0.25);color:#ff9500;padding:1px 5px;border-radius:4px;font-size:10px;margin-left:4px;">待审核</span>';
+    if (st === 'rejected') return '<span style="background:rgba(255,59,48,0.25);color:#ff453a;padding:1px 5px;border-radius:4px;font-size:10px;margin-left:4px;">已拒绝</span>';
+    return '';
+  }
+
   function renderUserList() {
     const userListEl = document.getElementById('userList');
     if (!userListEl) return;
@@ -267,11 +275,11 @@
         const div = document.createElement('div');
         div.className = 'list-item user-item';
         const devShort = user.deviceId ? user.deviceId.substring(0, 8) + '...' : '未知';
-        /* === 修改：用户列表里密码也打码 === */
         const statusStr = getStatusText(uname);
+        const stBadge = getStatusBadge(user);
         
         div.innerHTML = `
-          👤 ${escapeHtml(uname)}${user.isAuthor ? ' 👑' : ''} - ${statusStr}<br>
+          👤 ${escapeHtml(uname)}${user.isAuthor ? ' 👑' : ''}${stBadge} - ${statusStr}<br>
           <span style="font-size:10px;color:rgba(255,255,255,0.5);">
             密码: •••••• | 设备: ${devShort}
           </span>`;
@@ -382,7 +390,6 @@
       closeActionModal();
       closePullModal();
       closeSettings();
-      /* === 新增：切换用户时重置密码明文状态 === */
       revealedPasswordUser = null;
     }
 
@@ -393,9 +400,8 @@
     const lvl = userData.level || 1;
     const title = userData.title || "";
     const globalMuteInfo = await getGlobalMuteStatus(uname);
-    const fp = userData.fingerprint || "";
+    const uStatus = userData.status || 'approved';
 
-    /* === 新增：根据 revealedPasswordUser 决定密码显示方式 === */
     const isRevealed = (revealedPasswordUser === uname);
     const pwdDisplayHtml = isRevealed
       ? `<span id="pwdValue" style="color:#ffd700;font-weight:bold;letter-spacing:1px;">${escapeHtml(plainPwd)}</span>
@@ -421,6 +427,20 @@
         </div>
       `;
     }
+    if (uStatus === 'pending') {
+      banHtml += `
+        <div style="background:rgba(255,149,0,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,149,0,0.6); margin-bottom:12px;">
+          <p style="color:#ff9500; font-weight:bold; font-size:14px;">⏳ 该用户正在等待注册审核</p>
+        </div>
+      `;
+    }
+    if (uStatus === 'rejected') {
+      banHtml += `
+        <div style="background:rgba(255,59,48,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,59,48,0.6); margin-bottom:12px;">
+          <p style="color:#ff453a; font-weight:bold; font-size:14px;">❌ 该用户注册申请已被拒绝</p>
+        </div>
+      `;
+    }
 
     document.getElementById('userManageTitle').innerText = `管理: ${uname}`;
     document.getElementById('userManageContent').innerHTML = `
@@ -432,12 +452,20 @@
         <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
           密码：${pwdDisplayHtml}
         </p>
-        <p style="margin-bottom:8px;font-size:13px;word-break:break-all;color:rgba(255,255,255,0.7);">
+        <p style="margin-bottom:12px;font-size:13px;word-break:break-all;color:rgba(255,255,255,0.7);">
           设备码：<span style="color:#00c6ff;font-weight:bold;">${escapeHtml(dId)}</span>
         </p>
-        <p style="margin-bottom:12px;font-size:13px;word-break:break-all;color:rgba(255,255,255,0.7);">
-          指纹：<span style="color:#ff00ff;font-weight:bold;font-size:11px;">${escapeHtml(fp || '无记录')}</span>
-        </p>
+
+        ${uStatus === 'pending' ? `
+        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:15px;padding-top:15px;">
+          <button class="btn-green" onclick="approveUser('${escapeAttr(uname)}')">✅ 通过注册申请</button>
+          <button class="btn-red" onclick="rejectUser('${escapeAttr(uname)}')">❌ 拒绝注册申请</button>
+        </div>` : ''}
+
+        ${uStatus === 'rejected' ? `
+        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:15px;padding-top:15px;">
+          <button class="btn-green" onclick="approveUser('${escapeAttr(uname)}')">✅ 重新通过该用户</button>
+        </div>` : ''}
         
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px;">
           <button class="btn-orange" onclick="changeLevel('${escapeAttr(uname)}', ${lvl})">修改等级</button>
@@ -453,12 +481,6 @@
           <button class="btn-green" onclick="unbanDevice('${escapeAttr(dId)}')">✅ 解除封禁</button>
         </div>
 
-        <!-- === 新增：指纹封禁区块 === -->
-        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:15px;padding-top:15px;">
-          <button class="btn-dark-red" onclick="banFingerprint('${escapeAttr(fp)}')">🚫 封禁该指纹</button>
-          <button class="btn-green" onclick="unbanFingerprint('${escapeAttr(fp)}')">✅ 解除指纹封禁</button>
-        </div>
-
         <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:15px;padding-top:15px;">
           <button class="btn-orange" onclick="muteGlobal('${escapeAttr(uname)}')">🤐 全网禁言</button>
           <button class="btn-green" onclick="unmuteGlobal('${escapeAttr(uname)}')">🔊 解除全网禁言</button>
@@ -466,7 +488,83 @@
       </div>`;
   };
 
-  /* === 新增：密码查看 / 隐藏 === */
+  // ==================== 注册审核相关 ====================
+  window.approveUser = function (uname) {
+    update(ref(db, 'users/' + uname), { status: 'approved' }).then(() => {
+      alert(`✅ 已通过【${uname}】的注册申请，他/她现在可以登录了。`);
+      if (allUsersData[uname]) manageUser(uname, allUsersData[uname], true);
+    });
+  };
+
+  window.rejectUser = function (uname) {
+    if (!confirm(`确定拒绝【${uname}】的注册申请？\n他/她将无法登录。`)) return;
+    update(ref(db, 'users/' + uname), { status: 'rejected' }).then(() => {
+      alert(`❌ 已拒绝【${uname}】的注册申请。`);
+      if (allUsersData[uname]) manageUser(uname, allUsersData[uname], true);
+    });
+  };
+
+  window.openPendingPanel = function () {
+    const existing = document.getElementById('pendingModal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'pendingModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);backdrop-filter:blur(10px);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;';
+    modal.innerHTML = `
+      <div style="background:rgba(30,30,30,0.95);border:1px solid rgba(255,149,0,0.3);border-radius:24px;width:90%;max-width:420px;max-height:80vh;display:flex;flex-direction:column;padding:20px;">
+        <h3 style="color:#ff9500;text-align:center;margin-bottom:15px;font-size:18px;">📋 注册审核</h3>
+        <div id="pendingList" style="flex:1;overflow-y:auto;font-size:13px;min-height:100px;">
+          <div style="text-align:center;color:rgba(255,255,255,0.4);padding:20px;">加载中...</div>
+        </div>
+        <button onclick="document.getElementById('pendingModal').remove()" style="margin-top:15px;padding:12px;border-radius:12px;background:rgba(255,255,255,0.1);color:#fff;border:none;font-weight:bold;cursor:pointer;">关闭</button>
+      </div>`;
+    document.body.appendChild(modal);
+    renderPendingList();
+  };
+
+  function renderPendingList() {
+    const listEl = document.getElementById('pendingList');
+    if (!listEl) return;
+    const pendingUsers = Object.keys(allUsersData).filter(u => allUsersData[u].status === 'pending');
+
+    if (pendingUsers.length === 0) {
+      listEl.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.4);padding:30px;">暂无待审核用户</div>';
+      return;
+    }
+
+    listEl.innerHTML = '';
+    pendingUsers.forEach(uname => {
+      const user = allUsersData[uname];
+      const devShort = user.deviceId ? user.deviceId.substring(0, 12) + '...' : '未知';
+      const div = document.createElement('div');
+      div.style.cssText = 'padding:14px;border-radius:12px;background:rgba(255,149,0,0.05);border:1px solid rgba(255,149,0,0.2);margin-bottom:10px;';
+      div.innerHTML = `
+        <div style="color:#ff9500;font-weight:bold;font-size:14px;margin-bottom:6px;">👤 ${escapeHtml(uname)}</div>
+        <div style="color:rgba(255,255,255,0.5);font-size:11px;margin-bottom:10px;">设备：${escapeHtml(devShort)}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <button onclick="approveUserFromPanel('${escapeAttr(uname)}')" style="padding:10px;border-radius:8px;background:rgba(52,199,89,0.2);color:#30d158;border:1px solid rgba(52,199,89,0.4);font-weight:bold;cursor:pointer;font-size:13px;">✅ 通过</button>
+          <button onclick="rejectUserFromPanel('${escapeAttr(uname)}')" style="padding:10px;border-radius:8px;background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;cursor:pointer;font-size:13px;">❌ 拒绝</button>
+        </div>
+      `;
+      listEl.appendChild(div);
+    });
+  }
+
+  window.approveUserFromPanel = function (uname) {
+    update(ref(db, 'users/' + uname), { status: 'approved' }).then(() => {
+      renderPendingList();
+    });
+  };
+
+  window.rejectUserFromPanel = function (uname) {
+    if (!confirm(`确定拒绝【${uname}】的注册申请？`)) return;
+    update(ref(db, 'users/' + uname), { status: 'rejected' }).then(() => {
+      renderPendingList();
+    });
+  };
+
+  // ==================== 密码查看 / 隐藏 ====================
   window.revealPassword = function (uname) {
     const inputPwd = prompt("请输入作者密钥以查看密码：");
     if (inputPwd === null) return;
@@ -486,89 +584,6 @@
     if (allUsersData[uname]) {
       manageUser(uname, allUsersData[uname], true);
     }
-  };
-
-  /* === 新增：指纹封禁 / 解封 === */
-  window.banFingerprint = function (fp) {
-    if (!fp || fp === '无记录') return alert("该用户无指纹记录（可能是旧账号或指纹生成失败）");
-    const reason = prompt("请输入封禁该指纹的原因：");
-    if (reason === null) return;
-    if (!confirm(`确认永久封禁该指纹？\n指纹：${fp.substring(0,16)}...\n原因：${reason}`)) return;
-    set(ref(db, 'banned_fingerprints/' + fp), {
-      reason: reason || '作者手动封禁',
-      time: Date.now(),
-      manual: true
-    }).then(() => {
-      alert("✅ 已封禁该指纹，该浏览器将无法注册/登录新号");
-      if (currentView === 'users' && actionTargetName) {
-        manageUser(actionTargetName, allUsersData[actionTargetName], true);
-      }
-    });
-  };
-
-  window.unbanFingerprint = function (fp) {
-    if (!fp || fp === '无记录') return alert("该用户无指纹记录");
-    if (!confirm("确认解除该指纹封禁？\n\n注意：如果 fingerprint_map 下还绑着多个账号，解封后用户再注册第3个账号会再次触发自动封禁。\n\n是否同时清空该指纹的账号绑定记录（推荐）？")) return;
-    remove(ref(db, 'banned_fingerprints/' + fp)).then(() => {
-      remove(ref(db, 'fingerprint_map/' + fp)).then(() => {
-        alert("✅ 已解封，绑定记录已清空");
-        if (currentView === 'users' && actionTargetName) {
-          manageUser(actionTargetName, allUsersData[actionTargetName], true);
-        }
-      });
-    });
-  };
-
-  /* === 新增：指纹封禁管理面板 === */
-  window.openFingerprintPanel = function () {
-    const existing = document.getElementById('fpModal');
-    if (existing) existing.remove();
-
-    const modal = document.createElement('div');
-    modal.id = 'fpModal';
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);backdrop-filter:blur(10px);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;';
-    modal.innerHTML = `
-      <div style="background:rgba(30,30,30,0.95);border:1px solid rgba(255,0,255,0.3);border-radius:24px;width:90%;max-width:400px;max-height:80vh;display:flex;flex-direction:column;padding:20px;">
-        <h3 style="color:#ff00ff;text-align:center;margin-bottom:15px;font-size:18px;">🧬 指纹封禁管理</h3>
-        <div id="fpList" style="flex:1;overflow-y:auto;font-size:13px;min-height:100px;">
-          <div style="text-align:center;color:rgba(255,255,255,0.4);padding:20px;">加载中...</div>
-        </div>
-        <button onclick="document.getElementById('fpModal').remove()" style="margin-top:15px;padding:12px;border-radius:12px;background:rgba(255,255,255,0.1);color:#fff;border:none;font-weight:bold;cursor:pointer;">关闭</button>
-      </div>`;
-    document.body.appendChild(modal);
-
-    get(ref(db, 'banned_fingerprints')).then(snap => {
-      const listEl = document.getElementById('fpList');
-      if (!snap.exists()) {
-        listEl.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.4);padding:30px;">暂无指纹封禁记录</div>';
-        return;
-      }
-      const data = snap.val();
-      listEl.innerHTML = '';
-      for (let fp in data) {
-        const info = data[fp];
-        const accounts = info.accounts ? info.accounts.join('、') : '无记录';
-        const div = document.createElement('div');
-        div.style.cssText = 'padding:12px;border-radius:12px;background:rgba(255,0,255,0.05);border:1px solid rgba(255,0,255,0.2);margin-bottom:10px;';
-        div.innerHTML = `
-          <div style="color:#ff00ff;font-weight:bold;font-size:11px;word-break:break-all;margin-bottom:6px;">${escapeHtml(fp)}</div>
-          <div style="color:#fff;font-size:12px;margin-bottom:4px;">原因：${escapeHtml(info.reason || '未填写')}</div>
-          <div style="color:rgba(255,255,255,0.5);font-size:11px;margin-bottom:4px;">涉及账号：${escapeHtml(accounts)}</div>
-          <div style="color:rgba(255,255,255,0.4);font-size:10px;margin-bottom:8px;">${info.time ? new Date(info.time).toLocaleString() : ''} ${info.manual ? '（作者手动）' : '（系统自动）'}</div>
-          <button onclick="unbanFingerprintFromPanel('${escapeAttr(fp)}')" style="width:100%;padding:8px;border-radius:8px;background:rgba(52,199,89,0.2);color:#30d158;border:1px solid rgba(52,199,89,0.4);font-weight:bold;cursor:pointer;font-size:12px;">✅ 解除封禁</button>
-        `;
-        listEl.appendChild(div);
-      }
-    });
-  };
-
-  window.unbanFingerprintFromPanel = function (fp) {
-    if (!confirm("确认解除该指纹封禁并清空其账号绑定记录？")) return;
-    remove(ref(db, 'banned_fingerprints/' + fp)).then(() => {
-      remove(ref(db, 'fingerprint_map/' + fp)).then(() => {
-        openFingerprintPanel();
-      });
-    });
   };
 
   window.muteGlobal = function(uname) {
@@ -1762,7 +1777,6 @@
   #privateView { display:none; flex-direction:column; flex:1; height:100%; }
   #pmChatList { display:none; flex-direction:column; flex:1; }
 
-  /* 红点样式 */
   .badge {
     position: absolute;
     top: -5px;
@@ -1803,8 +1817,7 @@
         <button class="create-btn" onclick="authorCreateGroup()">➕ 作者建群</button>
         <button class="pull-btn" onclick="openPullModal()">👥 强制拉人</button>
         <button class="global-btn" onclick="globalAnnouncement()">📢 全网聊天公告</button>
-        <!-- === 新增：指纹封禁管理按钮 === -->
-        <button class="danger-btn" onclick="openFingerprintPanel()" style="background:rgba(255,0,255,0.1);color:#ff00ff;border-color:rgba(255,0,255,0.3);">🧬 指纹封禁管理</button>
+        <button class="btn-orange" onclick="openPendingPanel()" style="background:rgba(255,149,0,0.15);color:#ff9500;border-color:rgba(255,149,0,0.4);">📋 注册审核</button>
         <button class="danger-btn" onclick="clearAllGroups()">☢️ 销毁全网群聊</button>
         <button class="danger-btn" onclick="clearAllUsers()">☢️ 抹除所有用户</button>
       </div>
