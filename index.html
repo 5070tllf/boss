@@ -3,1932 +3,581 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
-<title>作者端 · 后台控制台</title>
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import {
-    getDatabase, ref, push, onValue, query, limitToLast,
-    get, set, update, remove
-  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
-
-  const firebaseConfig = { databaseURL: "https://class3b-5b39b-default-rtdb.asia-southeast1.firebasedatabase.app" };
-  const app = initializeApp(firebaseConfig);
-  const db = getDatabase(app);
-
-  const AUTHOR_NAME = "NB01";
-  const AUTHOR_PWD_KEY = "aurora_author_ok";
-  const AUTHOR_DEFAULT_PWD = "f2519484"; 
-
-  let currentGroupId = "";
-  let currentView = "groups";
-  let actionTargetName = "";
-  let spyUnsub = null;
-  let currentGroupInfo = {}; 
-  
-  let currentPrivateRoomId = "";
-  let privateSpyUnsub = null;
-  let allPrivateRooms = {}; 
-  
-  let allUsersData = {};
-  let onlineUsers = []; 
-  let violationsData = {};
-  let reportsData = {};
-  let plazaData = {};
-  let plazaUnsub = null;
-  let isPanelOpen = false;
-
-  // 密码显示状态（当前明文显示密码的用户名，null 表示全部打码）
-  let revealedPasswordUser = null;
-
-  function escapeHtml(s) {
-    if (s === undefined || s === null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-  function escapeAttr(s) {
-    return escapeHtml(s).replace(/\n/g, '\\n');
-  }
-  function safeAtob(b64) {
-    try { return b64 ? atob(b64) : '(无)'; }
-    catch(e) { return '(无法解密)'; }
-  }
-  function parseTimeInput(input) {
-    if (!input) return 0;
-    input = String(input).trim().toLowerCase();
-    if (input.includes('e+') || input.includes('e')) {
-      const n = parseFloat(input.replace(/[^0-9.e+]/g, ''));
-      if (isNaN(n) || n > 1e+10) return 3153600000000;
-      return n * 86400000;
-    }
-    let n = parseFloat(input);
-    if (isNaN(n)) n = 0;
-    if (input.includes('m')) return n * 60000;
-    if (input.includes('h')) return n * 3600000;
-    if (input.includes('d')) return n * 86400000;
-    return n * 60000;
-  }
-
-  async function ensureAuthorUser() {
-    try {
-      const snap = await get(ref(db, 'users/' + AUTHOR_NAME));
-      if (!snap.exists()) {
-        await set(ref(db, 'users/' + AUTHOR_NAME), {
-          password: btoa(AUTHOR_DEFAULT_PWD),
-          deviceId: "AUTHOR-DEVICE",
-          isAuthor: true,
-          level: 5201314,
-          title: "作者",
-          status: "approved"
-        });
-      } else if (!snap.val().isAuthor) {
-        await update(ref(db, 'users/' + AUTHOR_NAME), { isAuthor: true, status: "approved" });
-      }
-    } catch (e) { console.warn(e); }
-  }
-
-  async function checkAuthorGate() {
-    if (sessionStorage.getItem(AUTHOR_PWD_KEY) === "ok") {
-      await ensureAuthorUser();
-      initAll();
-      return;
-    }
-    document.body.innerHTML = `
-      <div class="aurora-bg"></div>
-      <div style="position:fixed;inset:0;display:flex;justify-content:center;align-items:center;z-index:99999;">
-        <div style="background:rgba(30,30,30,0.6);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);border:1px solid rgba(255,255,255,0.15);padding:40px 30px;border-radius:24px;width:85%;max-width:340px;display:flex;flex-direction:column;gap:15px;box-shadow:0 30px 60px rgba(0,0,0,0.6);">
-          <h1 style="text-align:center;color:#fff;font-size:22px;font-weight:800;">作者端</h1>
-          <p style="text-align:center;color:rgba(255,255,255,0.5);font-size:12px;">请输入作者密钥</p>
-          <input id="authorPwd" type="password" placeholder="作者密钥"
-            style="width:100%;padding:16px;border:1px solid rgba(255,255,255,0.15);border-radius:14px;background:rgba(0,0,0,0.5);color:#fff;outline:none;font-size:16px;">
-          <button id="authorLoginBtn"
-            style="width:100%;padding:16px;border:none;border-radius:14px;background:linear-gradient(135deg,#ff0080,#7928ca);color:#fff;font-weight:bold;font-size:16px;cursor:pointer;box-shadow:0 8px 25px rgba(255,0,128,0.4);">
-            进入
-          </button>
-          <p id="authorErr" style="color:#ff3b30;font-size:12px;text-align:center;min-height:16px;"></p>
-        </div>
-      </div>`;
-    document.getElementById('authorLoginBtn').onclick = async () => {
-      if (document.getElementById('authorPwd').value === AUTHOR_DEFAULT_PWD) {
-        sessionStorage.setItem(AUTHOR_PWD_KEY, "ok");
-        await ensureAuthorUser();
-        window.location.reload();
-      } else {
-        document.getElementById('authorErr').innerText = "密钥错误";
-      }
-    };
-    document.getElementById('authorPwd').addEventListener('keydown', e => {
-      if (e.key === 'Enter') document.getElementById('authorLoginBtn').click();
-    });
-  }
-
-  function initAll() {
-    listenAllGroups();
-    listenAllUsers();
-    listenOnlineStatus(); 
-    listenViolations();
-    listenReports();
-    listenAllPrivateRooms();
-  }
-
-  function listenViolations() {
-    onValue(ref(db, 'violations'), (snap) => {
-      violationsData = snap.exists() ? snap.val() : {};
-      if (currentView === 'violations') {
-        document.querySelector('.view-btn:nth-child(3)').click();
-      }
-    });
-  }
-
-  function listenReports() {
-    onValue(ref(db, 'reports'), (snap) => {
-      reportsData = snap.exists() ? snap.val() : {};
-      if (currentView === 'reports') {
-        document.querySelector('.view-btn:nth-child(4)').click();
-      }
-    });
-  }
-
-  function listenOnlineStatus() {
-    onValue(ref(db, 'status'), (snap) => {
-      onlineUsers = [];
-      if (snap.exists()) {
-        const now = Date.now();
-        const data = snap.val();
-        for (let u in data) {
-          if (data[u].online && (now - (data[u].lastActive || 0) < 15000)) {
-            onlineUsers.push({ name: u, group: data[u].currentGroup || "" });
-          }
-        }
-      }
-      renderUserList();
-      if (currentView === 'users' && actionTargetName) {
-        if (allUsersData[actionTargetName]) {
-          manageUser(actionTargetName, allUsersData[actionTargetName], true);
-        }
-      }
-    });
-  }
-
-  function listenAllPrivateRooms() {
-    onValue(ref(db, 'private_msgs'), (snap) => {
-      allPrivateRooms = {};
-      let unreadRooms = 0;
-
-      if (snap.exists()) {
-        snap.forEach(roomSnap => {
-          const roomId = roomSnap.key;
-          const msgs = roomSnap.val();
-          let lastMsg = null;
-          let lastTime = 0;
-          for (let key in msgs) {
-            if (msgs[key].time > lastTime) {
-              lastTime = msgs[key].time;
-              lastMsg = msgs[key];
-            }
-          }
-          
-          const lastRead = parseInt(localStorage.getItem('author_read_pm_' + roomId) || '0');
-          if (lastTime > lastRead) unreadRooms++;
-
-          const users = roomId.split('_');
-          allPrivateRooms[roomId] = {
-            roomId: roomId,
-            user1: users[0],
-            user2: users[1],
-            lastMsgText: lastMsg ? lastMsg.text : "",
-            lastMsgTime: lastTime
-          };
-        });
-      }
-
-      const badge = document.getElementById('authorPmBadge');
-      if (badge) {
-        if (unreadRooms > 0 && currentView !== 'private') {
-          badge.innerText = unreadRooms;
-          badge.style.display = 'block';
-        } else {
-          badge.style.display = 'none';
-        }
-      }
-
-      if (currentView === 'private') {
-        renderPrivateRooms();
-      }
-    });
-  }
-
-  function getStatusText(uname) {
-    const u = onlineUsers.find(x => x.name === uname);
-    if (!u) return '<span style="color:#888;">⚪ 离线</span>';
-    if (u.group) return `<span style="color:#30d158;">🟢 在线 (群 ${u.group})</span>`;
-    return '<span style="color:#30d158;">🟢 在线 (大厅)</span>';
-  }
-
-  function getBanStatus(deviceId) {
-    if (!deviceId || deviceId === "无记录") return { banned: false, reason: "" };
-    return new Promise((resolve) => {
-      get(ref(db, 'banned_devices/' + deviceId)).then(snap => {
-        if (snap.exists()) {
-          const val = snap.val();
-          resolve({ banned: true, reason: typeof val === 'object' ? (val.reason || "未填写") : "未填写" });
-        } else {
-          resolve({ banned: false, reason: "" });
-        }
-      }).catch(() => resolve({ banned: false, reason: "" }));
-    });
-  }
-
-  function getGlobalMuteStatus(uname) {
-    return new Promise((resolve) => {
-      get(ref(db, 'global_muted/' + uname)).then(snap => {
-        if (snap.exists()) {
-          const until = snap.val();
-          if (until > Date.now()) {
-            resolve({ muted: true, until: until, remain: until - Date.now() });
-          } else {
-            remove(ref(db, 'global_muted/' + uname));
-            resolve({ muted: false });
-          }
-        } else {
-          resolve({ muted: false });
-        }
-      });
-    });
-  }
-
-  function getStatusBadge(uData) {
-    const st = uData.status;
-    if (st === 'pending') return '<span style="background:rgba(255,149,0,0.25);color:#ff9500;padding:1px 5px;border-radius:4px;font-size:10px;margin-left:4px;">待审核</span>';
-    if (st === 'rejected') return '<span style="background:rgba(255,59,48,0.25);color:#ff453a;padding:1px 5px;border-radius:4px;font-size:10px;margin-left:4px;">已拒绝</span>';
-    return '';
-  }
-
-  function renderUserList() {
-    const userListEl = document.getElementById('userList');
-    if (!userListEl) return;
-    userListEl.innerHTML = '';
-    
-    if (Object.keys(allUsersData).length > 0) {
-      for (let uname in allUsersData) {
-        const user = allUsersData[uname];
-        const div = document.createElement('div');
-        div.className = 'list-item user-item';
-        const devShort = user.deviceId ? user.deviceId.substring(0, 8) + '...' : '未知';
-        const statusStr = getStatusText(uname);
-        const stBadge = getStatusBadge(user);
-        
-        div.innerHTML = `
-          👤 ${escapeHtml(uname)}${user.isAuthor ? ' 👑' : ''}${stBadge} - ${statusStr}<br>
-          <span style="font-size:10px;color:rgba(255,255,255,0.5);">
-            密码: •••••• | 设备: ${devShort}
-          </span>`;
-        div.onclick = () => manageUser(uname, user);
-        userListEl.appendChild(div);
-      }
-    } else {
-      userListEl.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无用户</div>';
-    }
-  }
-
-  function renderPrivateRooms() {
-    const el = document.getElementById('privateRoomList');
-    el.innerHTML = '';
-    const sorted = Object.values(allPrivateRooms).sort((a, b) => b.lastMsgTime - a.lastMsgTime);
-
-    if (sorted.length === 0) {
-      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无任何私聊记录</div>';
-      return;
-    }
-
-    sorted.forEach(room => {
-      const div = document.createElement('div');
-      div.className = 'list-item';
-      div.style.borderLeftColor = '#00c6ff';
-      div.style.userSelect = 'none';
-      div.style.webkitUserSelect = 'none';
-      
-      if (room.roomId === currentPrivateRoomId) {
-        div.style.background = 'rgba(0,198,255,0.2)';
-      }
-
-      const lastRead = parseInt(localStorage.getItem('author_read_pm_' + room.roomId) || '0');
-      const isUnread = room.lastMsgTime > lastRead;
-
-      div.innerHTML = `
-        <span style="color:#00c6ff;font-weight:bold;">💬 ${escapeHtml(room.user1)} ↔ ${escapeHtml(room.user2)}</span>
-        ${isUnread ? '<span style="color:#ff3b30;font-size:10px;margin-left:5px;background:rgba(255,59,48,0.2);padding:2px 4px;border-radius:4px;">未读</span>' : ''}
-        <br>
-        <span style="font-size:11px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;margin-top:4px;">
-          最后消息: ${escapeHtml(room.lastMsgText)}
-        </span>
-      `;
-      
-      div.onclick = () => openPrivateMonitor(room.roomId, room.user1, room.user2);
-      
-      div.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        if (confirm(`确定要彻底清空并删除这段私聊记录吗？`)) {
-          remove(ref(db, 'private_msgs/' + room.roomId)).then(() => {
-            alert("记录已删除");
-            if(currentPrivateRoomId === room.roomId) {
-              document.getElementById('pmChatList').style.display = 'none';
-              document.getElementById('pmChatEmpty').style.display = 'flex';
-            }
-          });
-        }
-      });
-
-      let touchTimer;
-      let isMoved = false;
-      div.addEventListener('touchstart', (e) => {
-        isMoved = false;
-        touchTimer = setTimeout(() => {
-          if (!isMoved) {
-            if (navigator.vibrate) navigator.vibrate(50);
-            if (confirm(`确定要彻底清空并删除这段私聊记录吗？`)) {
-              remove(ref(db, 'private_msgs/' + room.roomId)).then(() => alert("记录已删除"));
-            }
-          }
-        }, 800);
-      }, { passive: true });
-
-      div.addEventListener('touchmove', () => {
-        isMoved = true;
-        if (touchTimer) clearTimeout(touchTimer);
-      }, { passive: true });
-
-      div.addEventListener('touchend', () => {
-        if (touchTimer) clearTimeout(touchTimer);
-      });
-
-      el.appendChild(div);
-    });
-  }
-
-  function listenAllUsers() {
-    onValue(ref(db, 'users'), (snapshot) => {
-      if (snapshot.exists()) {
-        allUsersData = snapshot.val();
-      } else {
-        allUsersData = {};
-      }
-      renderUserList();
-    });
-  }
-
-  window.manageUser = async function (uname, userData, isRefresh = false) {
-    if (!isRefresh) {
-      currentView = "users";
-      actionTargetName = uname; 
-      document.getElementById('chatView').style.display = 'none';
-      document.getElementById('usersView').style.display = 'flex';
-      document.getElementById('violationsView').style.display = 'none';
-      document.getElementById('reportsView').style.display = 'none';
-      document.getElementById('plazaView').style.display = 'none';
-      document.getElementById('privateView').style.display = 'none';
-      closeActionModal();
-      closePullModal();
-      closeSettings();
-      revealedPasswordUser = null;
-    }
-
-    const dId = userData.deviceId || "无记录";
-    const plainPwd = safeAtob(userData.password);
-    const statusStr = getStatusText(uname);
-    const banInfo = await getBanStatus(dId);
-    const lvl = userData.level || 1;
-    const title = userData.title || "";
-    const globalMuteInfo = await getGlobalMuteStatus(uname);
-    const uStatus = userData.status || 'approved';
-
-    const isRevealed = (revealedPasswordUser === uname);
-    const pwdDisplayHtml = isRevealed
-      ? `<span id="pwdValue" style="color:#ffd700;font-weight:bold;letter-spacing:1px;">${escapeHtml(plainPwd)}</span>
-         <button onclick="hidePassword('${escapeAttr(uname)}')" style="width:auto;padding:4px 10px;margin-left:8px;background:rgba(255,255,255,0.1);color:#fff;font-size:12px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);cursor:pointer;">隐藏</button>`
-      : `<span style="color:#888;font-weight:bold;letter-spacing:2px;">••••••••</span>
-         <button onclick="revealPassword('${escapeAttr(uname)}')" style="width:auto;padding:4px 10px;margin-left:8px;background:rgba(255,215,0,0.15);color:#ffd700;font-size:12px;border-radius:6px;border:1px solid rgba(255,215,0,0.4);cursor:pointer;">查看</button>`;
-
-    let banHtml = "";
-    if (banInfo.banned) {
-      banHtml += `
-        <div style="background:rgba(255,59,48,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,59,48,0.6); margin-bottom:12px;">
-          <p style="color:#ff453a; font-weight:bold; font-size:14px; margin-bottom:4px;">🚫 设备已封禁</p>
-          <p style="color:#fff; font-size:12px;">原因：${escapeHtml(banInfo.reason)}</p>
-        </div>
-      `;
-    }
-    if (globalMuteInfo.muted) {
-      let remainText = globalMuteInfo.remain > 315360000000 ? "永久" : Math.ceil(globalMuteInfo.remain / 60000) + " 分钟";
-      banHtml += `
-        <div style="background:rgba(255,149,0,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,149,0,0.6); margin-bottom:12px;">
-          <p style="color:#ff9500; font-weight:bold; font-size:14px; margin-bottom:4px;">🤐 全网禁言中</p>
-          <p style="color:#fff; font-size:12px;">剩余：${remainText}</p>
-        </div>
-      `;
-    }
-    if (uStatus === 'pending') {
-      banHtml += `
-        <div style="background:rgba(255,149,0,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,149,0,0.6); margin-bottom:12px;">
-          <p style="color:#ff9500; font-weight:bold; font-size:14px;">⏳ 该用户正在等待注册审核</p>
-        </div>
-      `;
-    }
-    if (uStatus === 'rejected') {
-      banHtml += `
-        <div style="background:rgba(255,59,48,0.15); padding:12px; border-radius:12px; border:1px solid rgba(255,59,48,0.6); margin-bottom:12px;">
-          <p style="color:#ff453a; font-weight:bold; font-size:14px;">❌ 该用户注册申请已被拒绝</p>
-        </div>
-      `;
-    }
-
-    document.getElementById('userManageTitle').innerText = `管理: ${uname}`;
-    document.getElementById('userManageContent').innerHTML = `
-      <div class="user-manage-card">
-        ${banHtml}
-        <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
-          账号：<span style="color:#fff;font-weight:bold;">${escapeHtml(uname)}</span> (Lv.${lvl}) ${title ? `<span style="background:#ffd700;color:#000;padding:2px 6px;border-radius:6px;font-size:12px;">${escapeHtml(title)}</span>` : ''}
-        </p>
-        <p style="margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);">
-          密码：${pwdDisplayHtml}
-        </p>
-        <p style="margin-bottom:12px;font-size:13px;word-break:break-all;color:rgba(255,255,255,0.7);">
-          设备码：<span style="color:#00c6ff;font-weight:bold;">${escapeHtml(dId)}</span>
-        </p>
-
-        ${uStatus === 'pending' ? `
-        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:15px;padding-top:15px;">
-          <button class="btn-green" onclick="approveUser('${escapeAttr(uname)}')">✅ 通过注册申请</button>
-          <button class="btn-red" onclick="rejectUser('${escapeAttr(uname)}')">❌ 拒绝注册申请</button>
-        </div>` : ''}
-
-        ${uStatus === 'rejected' ? `
-        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:15px;padding-top:15px;">
-          <button class="btn-green" onclick="approveUser('${escapeAttr(uname)}')">✅ 重新通过该用户</button>
-        </div>` : ''}
-        
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px;">
-          <button class="btn-orange" onclick="changeLevel('${escapeAttr(uname)}', ${lvl})">修改等级</button>
-          <button class="btn-pink" onclick="changeTitle('${escapeAttr(uname)}', '${escapeAttr(title)}')">修改头衔</button>
-        </div>
-
-        <button class="btn-purple" onclick="changeUserName('${escapeAttr(uname)}')">修改名字</button>
-        <button class="btn-blue" onclick="changePass('${escapeAttr(uname)}')">修改密码</button>
-        <button class="btn-red" onclick="deleteUser('${escapeAttr(uname)}')">强制注销</button>
-        
-        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:15px;padding-top:15px;">
-          <button class="btn-dark-red" onclick="banDevice('${escapeAttr(dId)}')">🚫 封禁该设备</button>
-          <button class="btn-green" onclick="unbanDevice('${escapeAttr(dId)}')">✅ 解除封禁</button>
-        </div>
-
-        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:15px;padding-top:15px;">
-          <button class="btn-orange" onclick="muteGlobal('${escapeAttr(uname)}')">🤐 全网禁言</button>
-          <button class="btn-green" onclick="unmuteGlobal('${escapeAttr(uname)}')">🔊 解除全网禁言</button>
-        </div>
-      </div>`;
-  };
-
-  // ==================== 注册审核相关 ====================
-  window.approveUser = function (uname) {
-    update(ref(db, 'users/' + uname), { status: 'approved' }).then(() => {
-      alert(`✅ 已通过【${uname}】的注册申请，他/她现在可以登录了。`);
-      if (allUsersData[uname]) manageUser(uname, allUsersData[uname], true);
-    });
-  };
-
-  window.rejectUser = function (uname) {
-    if (!confirm(`确定拒绝【${uname}】的注册申请？\n他/她将无法登录。`)) return;
-    update(ref(db, 'users/' + uname), { status: 'rejected' }).then(() => {
-      alert(`❌ 已拒绝【${uname}】的注册申请。`);
-      if (allUsersData[uname]) manageUser(uname, allUsersData[uname], true);
-    });
-  };
-
-  window.openPendingPanel = function () {
-    const existing = document.getElementById('pendingModal');
-    if (existing) existing.remove();
-
-    const modal = document.createElement('div');
-    modal.id = 'pendingModal';
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);backdrop-filter:blur(10px);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;';
-    modal.innerHTML = `
-      <div style="background:rgba(30,30,30,0.95);border:1px solid rgba(255,149,0,0.3);border-radius:24px;width:90%;max-width:420px;max-height:80vh;display:flex;flex-direction:column;padding:20px;">
-        <h3 style="color:#ff9500;text-align:center;margin-bottom:15px;font-size:18px;">📋 注册审核</h3>
-        <div id="pendingList" style="flex:1;overflow-y:auto;font-size:13px;min-height:100px;">
-          <div style="text-align:center;color:rgba(255,255,255,0.4);padding:20px;">加载中...</div>
-        </div>
-        <button onclick="document.getElementById('pendingModal').remove()" style="margin-top:15px;padding:12px;border-radius:12px;background:rgba(255,255,255,0.1);color:#fff;border:none;font-weight:bold;cursor:pointer;">关闭</button>
-      </div>`;
-    document.body.appendChild(modal);
-    renderPendingList();
-  };
-
-  function renderPendingList() {
-    const listEl = document.getElementById('pendingList');
-    if (!listEl) return;
-    const pendingUsers = Object.keys(allUsersData).filter(u => allUsersData[u].status === 'pending');
-
-    if (pendingUsers.length === 0) {
-      listEl.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.4);padding:30px;">暂无待审核用户</div>';
-      return;
-    }
-
-    listEl.innerHTML = '';
-    pendingUsers.forEach(uname => {
-      const user = allUsersData[uname];
-      const devShort = user.deviceId ? user.deviceId.substring(0, 12) + '...' : '未知';
-      const div = document.createElement('div');
-      div.style.cssText = 'padding:14px;border-radius:12px;background:rgba(255,149,0,0.05);border:1px solid rgba(255,149,0,0.2);margin-bottom:10px;';
-      div.innerHTML = `
-        <div style="color:#ff9500;font-weight:bold;font-size:14px;margin-bottom:6px;">👤 ${escapeHtml(uname)}</div>
-        <div style="color:rgba(255,255,255,0.5);font-size:11px;margin-bottom:10px;">设备：${escapeHtml(devShort)}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-          <button onclick="approveUserFromPanel('${escapeAttr(uname)}')" style="padding:10px;border-radius:8px;background:rgba(52,199,89,0.2);color:#30d158;border:1px solid rgba(52,199,89,0.4);font-weight:bold;cursor:pointer;font-size:13px;">✅ 通过</button>
-          <button onclick="rejectUserFromPanel('${escapeAttr(uname)}')" style="padding:10px;border-radius:8px;background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;cursor:pointer;font-size:13px;">❌ 拒绝</button>
-        </div>
-      `;
-      listEl.appendChild(div);
-    });
-  }
-
-  window.approveUserFromPanel = function (uname) {
-    update(ref(db, 'users/' + uname), { status: 'approved' }).then(() => {
-      renderPendingList();
-    });
-  };
-
-  window.rejectUserFromPanel = function (uname) {
-    if (!confirm(`确定拒绝【${uname}】的注册申请？`)) return;
-    update(ref(db, 'users/' + uname), { status: 'rejected' }).then(() => {
-      renderPendingList();
-    });
-  };
-
-  // ==================== 密码查看 / 隐藏 ====================
-  window.revealPassword = function (uname) {
-    const inputPwd = prompt("请输入作者密钥以查看密码：");
-    if (inputPwd === null) return;
-    if (inputPwd !== AUTHOR_DEFAULT_PWD) {
-      return alert("❌ 密钥错误，无法查看");
-    }
-    revealedPasswordUser = uname;
-    if (allUsersData[uname]) {
-      manageUser(uname, allUsersData[uname], true);
-    }
-  };
-
-  window.hidePassword = function (uname) {
-    if (revealedPasswordUser === uname) {
-      revealedPasswordUser = null;
-    }
-    if (allUsersData[uname]) {
-      manageUser(uname, allUsersData[uname], true);
-    }
-  };
-
-  window.muteGlobal = function(uname) {
-    const timeStr = prompt(`全网禁言【${uname}】多久？\n1m / 1h / 1d / 1e+99d（永久）`);
-    if (!timeStr) return;
-    const ms = parseTimeInput(timeStr);
-    if (ms === 0) return alert("时间格式错误");
-    set(ref(db, 'global_muted/' + uname), Date.now() + ms).then(() => {
-      alert(`✅ 【${uname}】已被全网禁言！`);
-      manageUser(uname, allUsersData[uname], true);
-    });
-  };
-
-  window.unmuteGlobal = function(uname) {
-    remove(ref(db, 'global_muted/' + uname)).then(() => {
-      alert(`✅ 【${uname}】已解除全网禁言！`);
-      manageUser(uname, allUsersData[uname], true);
-    });
-  };
-
-  window.changeLevel = function(uname, currentLvl) {
-    const newLvl = prompt(`修改【${uname}】的等级：`, currentLvl);
-    if (!newLvl || isNaN(newLvl)) return;
-    update(ref(db, 'users/' + uname), { level: parseInt(newLvl) }).then(() => {
-      alert("等级修改成功，玩家刷新后生效。");
-      manageUser(uname, allUsersData[uname], true);
-    });
-  };
-
-  window.changeTitle = function(uname, currentTitle) {
-    const newTitle = prompt(`修改【${uname}】的专属头衔：`, currentTitle);
-    if (newTitle === null) return;
-    update(ref(db, 'users/' + uname), { title: newTitle.trim() }).then(() => {
-      alert("头衔修改成功，玩家刷新后生效。");
-      manageUser(uname, allUsersData[uname], true);
-    });
-  };
-
-  window.renderViolations = function() {
-    const el = document.getElementById('violationsList');
-    el.innerHTML = '';
-    const sorted = Object.keys(violationsData).map(name => {
-      return { name, ...violationsData[name] };
-    }).sort((a, b) => b.count - a.count);
-
-    if (sorted.length === 0) {
-      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无违规记录</div>';
-      return;
-    }
-
-    sorted.forEach(v => {
-      const div = document.createElement('div');
-      div.className = 'list-item user-item';
-      div.style.borderLeftColor = '#ff3b30';
-      div.style.cursor = 'pointer';
-      div.style.userSelect = 'none';
-      div.style.webkitUserSelect = 'none';
-      
-      div.innerHTML = `
-        <span style="color:#ff3b30;font-weight:bold;">⚠️ ${escapeHtml(v.name)}</span> (违规 ${v.count} 次)<br>
-        <span style="font-size:10px;color:rgba(255,255,255,0.5);">
-          最后违规内容: "${escapeHtml(v.lastWord)}"
-        </span>`;
-
-      div.onclick = () => { 
-        const reason = prompt(`【${v.name}】违规 ${v.count} 次。\n请输入要在客户端屏幕上警告他的话：`, "你已多次使用违规词汇，请文明发言！");
-        if (reason) {
-          set(ref(db, 'warnings/' + v.name), { active: true, reason: reason, time: Date.now() }).then(() => {
-            alert(`已向【${v.name}】发送客户端强制警告！`);
-          });
-        }
-      };
-
-      div.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        if (confirm(`确定要删除【${v.name}】的违规记录吗？`)) {
-          remove(ref(db, 'violations/' + v.name)).then(() => alert("记录已删除"));
-        }
-      });
-
-      let touchTimer;
-      let isMoved = false;
-      div.addEventListener('touchstart', (e) => {
-        isMoved = false;
-        touchTimer = setTimeout(() => {
-          if (!isMoved) {
-            if (navigator.vibrate) navigator.vibrate(50);
-            if (confirm(`确定要删除【${v.name}】的违规记录吗？`)) {
-              remove(ref(db, 'violations/' + v.name)).then(() => alert("记录已删除"));
-            }
-          }
-        }, 800);
-      }, { passive: true });
-
-      div.addEventListener('touchmove', () => {
-        isMoved = true;
-        if (touchTimer) clearTimeout(touchTimer);
-      }, { passive: true });
-
-      div.addEventListener('touchend', () => {
-        if (touchTimer) clearTimeout(touchTimer);
-      });
-
-      el.appendChild(div);
-    });
-  };
-
-  window.renderReports = function() {
-    const el = document.getElementById('reportsList');
-    el.innerHTML = '';
-    const sorted = Object.keys(reportsData).map(key => {
-      return { key, ...reportsData[key] };
-    }).sort((a, b) => b.time - a.time);
-
-    if (sorted.length === 0) {
-      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无玩家举报</div>';
-      return;
-    }
-
-    sorted.forEach(r => {
-      const div = document.createElement('div');
-      div.className = 'list-item user-item';
-      div.style.borderLeftColor = '#ff9500';
-      div.style.cursor = 'pointer';
-      div.style.userSelect = 'none';
-      div.style.webkitUserSelect = 'none';
-      
-      div.innerHTML = `
-        <span style="color:#ff9500;font-weight:bold;">🚨 被举报人: ${escapeHtml(r.target)}</span><br>
-        <span style="font-size:12px;color:rgba(255,255,255,0.8);">
-          原因: ${escapeHtml(r.reason)}
-        </span><br>
-        <span style="font-size:10px;color:rgba(255,255,255,0.5);">
-          举报人: ${escapeHtml(r.reporter)} | ${new Date(r.time).toLocaleString()}
-        </span>`;
-
-      div.onclick = () => { 
-        const reason = prompt(`对被举报人【${r.target}】发送警告：`, `你被举报存在违规行为（${r.reason}），请规范发言！`);
-        if (reason) {
-          set(ref(db, 'warnings/' + r.target), { active: true, reason: reason, time: Date.now() }).then(() => {
-            alert(`已向【${r.target}】发送客户端强制警告！`);
-            if(confirm("是否同时删除这条举报记录？")) {
-              remove(ref(db, 'reports/' + r.key));
-            }
-          });
-        }
-      };
-
-      div.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        if (confirm(`确定要删除这条举报记录吗？`)) {
-          remove(ref(db, 'reports/' + r.key)).then(() => alert("记录已删除"));
-        }
-      });
-
-      let touchTimer;
-      let isMoved = false;
-      div.addEventListener('touchstart', (e) => {
-        isMoved = false;
-        touchTimer = setTimeout(() => {
-          if (!isMoved) {
-            if (navigator.vibrate) navigator.vibrate(50);
-            if (confirm(`确定要删除这条举报记录吗？`)) {
-              remove(ref(db, 'reports/' + r.key)).then(() => alert("记录已删除"));
-            }
-          }
-        }, 800);
-      }, { passive: true });
-
-      div.addEventListener('touchmove', () => {
-        isMoved = true;
-        if (touchTimer) clearTimeout(touchTimer);
-      }, { passive: true });
-
-      div.addEventListener('touchend', () => {
-        if (touchTimer) clearTimeout(touchTimer);
-      });
-
-      el.appendChild(div);
-    });
-  };
-
-  window.renderPlaza = function() {
-    const el = document.getElementById('plazaList');
-    el.innerHTML = '';
-    const sorted = Object.keys(plazaData).map(key => {
-      return { key, ...plazaData[key] };
-    }).sort((a, b) => b.time - a.time);
-
-    if (sorted.length === 0) {
-      el.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">广场暂无动态</div>';
-      return;
-    }
-
-    sorted.forEach(p => {
-      const div = document.createElement('div');
-      div.className = 'list-item user-item';
-      div.style.borderLeftColor = p.isAuthor ? '#ffd700' : '#ff00ff';
-      div.style.userSelect = 'none';
-      div.style.webkitUserSelect = 'none';
-      
-      div.innerHTML = `
-        <span style="color:${p.isAuthor ? '#ffd700' : '#ff00ff'};font-weight:bold;">📢 ${escapeHtml(p.sender)}</span> (Lv.${p.level||1}) ${p.title ? `<span style="background:#ffd700;color:#000;padding:1px 4px;border-radius:4px;font-size:10px;">${escapeHtml(p.title)}</span>`:''}<br>
-        <span style="font-size:13px;color:#ddd;margin-top:5px;display:block;">${escapeHtml(p.text)}</span>
-        <span style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:5px;display:block;">${new Date(p.time).toLocaleString()}</span>
-      `;
-
-      div.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        if (confirm(`确定要删除【${p.sender}】的这条广场动态吗？`)) {
-          remove(ref(db, 'plaza/' + p.key)).then(() => alert("动态已删除"));
-        }
-      });
-
-      let touchTimer;
-      let isMoved = false;
-      div.addEventListener('touchstart', (e) => {
-        isMoved = false;
-        touchTimer = setTimeout(() => {
-          if (!isMoved) {
-            if (navigator.vibrate) navigator.vibrate(50);
-            if (confirm(`确定要删除【${p.sender}】的这条广场动态吗？`)) {
-              remove(ref(db, 'plaza/' + p.key)).then(() => alert("动态已删除"));
-            }
-          }
-        }, 800);
-      }, { passive: true });
-
-      div.addEventListener('touchmove', () => {
-        isMoved = true;
-        if (touchTimer) clearTimeout(touchTimer);
-      }, { passive: true });
-
-      div.addEventListener('touchend', () => {
-        if (touchTimer) clearTimeout(touchTimer);
-      });
-
-      el.appendChild(div);
-    });
-  };
-
-  function listenAllGroups() {
-    onValue(ref(db, 'group_info'), (snapshot) => {
-      const listEl = document.getElementById('groupList');
-      if (!listEl) return;
-      listEl.innerHTML = '';
-      if (snapshot.exists()) {
-        const data = snapshot.val();
-        for (let gid in data) {
-          const div = document.createElement('div');
-          div.className = 'list-item';
-          div.style.userSelect = 'none';
-          div.style.webkitUserSelect = 'none';
-          
-          div.innerHTML = `
-            💬 ${escapeHtml(data[gid].name || '无群名')}<br>
-            <span style="font-size:10px;color:rgba(255,255,255,0.5);">
-              ID: ${gid} | 群主: ${escapeHtml(data[gid].creator || '未知')}
-            </span>`;
-
-          let lastClick = 0;
-          div.onclick = function (e) {
-            if (div.dataset.longpressed === 'true') {
-              div.dataset.longpressed = 'false';
-              return;
-            }
-            const now = Date.now();
-            if (now - lastClick < 350) {
-              deleteGroup(gid, data[gid].name);
-            } else {
-              currentView = "groups";
-              document.getElementById('usersView').style.display = 'none';
-              document.getElementById('violationsView').style.display = 'none';
-              document.getElementById('reportsView').style.display = 'none';
-              document.getElementById('plazaView').style.display = 'none';
-              document.getElementById('privateView').style.display = 'none';
-              document.getElementById('chatView').style.display = 'flex';
-              spyGroup(gid);
-              closeActionModal();
-              closePullModal();
-              closeSettings();
-            }
-            lastClick = now;
-          };
-
-          let touchTimer = null;
-          div.addEventListener('touchstart', (e) => {
-            div.dataset.longpressed = 'false';
-            if (touchTimer) clearTimeout(touchTimer);
-            
-            touchTimer = setTimeout(() => {
-              div.dataset.longpressed = 'true';
-              if (navigator.vibrate) navigator.vibrate(50);
-              deleteGroup(gid, data[gid].name);
-            }, 800);
-          }, { passive: true });
-
-          div.addEventListener('touchmove', () => {
-            if (touchTimer) clearTimeout(touchTimer);
-            div.dataset.longpressed = 'false';
-          }, { passive: true });
-
-          div.addEventListener('touchend', (e) => {
-            if (touchTimer) clearTimeout(touchTimer);
-            if (div.dataset.longpressed === 'true') {
-              e.preventDefault();
-            }
-          }, { passive: false });
-
-          div.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            deleteGroup(gid, data[gid].name);
-          });
-
-          listEl.appendChild(div);
-        }
-      } else {
-        listEl.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;font-size:12px;">暂无群聊</div>';
-      }
-    });
-  }
-
-  window.deleteGroup = function (gid, gname) {
-    if (!confirm(`确定强制销毁群聊 [${gname || gid}]？`)) return;
-    set(ref(db, 'group_info/' + gid), null);
-    remove(ref(db, 'groups/' + gid)).then(() => alert("群聊已销毁"));
-  };
-
-  window.deleteUser = function (uname) {
-    if (!confirm(`确认强制注销【${uname}】？`)) return;
-    document.getElementById('usersView').style.display = 'none';
-    document.getElementById('chatView').style.display = 'flex';
-    remove(ref(db, 'users/' + uname)).then(() => alert(`【${uname}】已注销`));
-  };
-
-  window.changeUserName = async function (oldName) {
-    const newName = prompt(`将【${oldName}】的名字改为：`);
-    if (!newName || newName.trim() === "" || newName === oldName) return;
-    try {
-      const check = await get(ref(db, 'users/' + newName));
-      if (check.exists()) return alert("该名字已被占用！");
-      const old = await get(ref(db, 'users/' + oldName));
-      if (!old.exists()) return alert("用户不存在");
-      await set(ref(db, 'users/' + newName), old.val());
-      await remove(ref(db, 'users/' + oldName));
-
-      const groupsSnap = await get(ref(db, 'group_info'));
-      if (groupsSnap.exists()) {
-        const groups = groupsSnap.val();
-        for (let gid in groups) {
-          const g = groups[gid];
-          if (g.creator === oldName) await update(ref(db, `group_info/${gid}`), { creator: newName });
-          if (g.members && g.members.includes(oldName)) {
-            await update(ref(db, `group_info/${gid}`), { members: g.members.map(m => m === oldName ? newName : m) });
-          }
-          if (g.admins && g.admins.includes(oldName)) {
-            await update(ref(db, `group_info/${gid}`), { admins: g.admins.map(a => a === oldName ? newName : a) });
-          }
-          const msgSnap = await get(ref(db, `groups/${gid}/messages`));
-          if (msgSnap.exists()) {
-            const updates = {};
-            msgSnap.forEach(msg => {
-              if (msg.val().sender === oldName) updates[`groups/${gid}/messages/${msg.key}/sender`] = newName;
-            });
-            if (Object.keys(updates).length) await update(ref(db), updates);
-          }
-        }
-      }
-      alert("改名成功，群聊记录已同步");
-    } catch (e) { alert("改名失败：" + e.message); }
-  };
-
-  window.changePass = function (uname) {
-    const newPass = prompt(`为【${uname}】设置新密码：`);
-    if (!newPass) return;
-    update(ref(db, 'users/' + uname), { password: btoa(newPass) }).then(() => alert("密码已修改"));
-  };
-
-  window.banDevice = function (deviceId) {
-    if (deviceId === "无记录") return alert("无设备码");
-    const reason = prompt("请输入封禁原因（如：辱骂群友、发色情广告等）：");
-    if (reason === null) return;
-    if (!confirm(`确认永久封禁此设备？\n原因：${reason}`)) return;
-    set(ref(db, 'banned_devices/' + deviceId), { banned: true, reason: reason }).then(() => {
-      alert("已封禁");
-      if (currentView === 'users' && actionTargetName) {
-        manageUser(actionTargetName, allUsersData[actionTargetName], true);
-      }
-    });
-  };
-
-  window.unbanDevice = function (deviceId) {
-    if (deviceId === "无记录") return alert("无设备码");
-    if (!confirm("确认解除此设备封禁？")) return;
-    remove(ref(db, 'banned_devices/' + deviceId)).then(() => {
-      alert("已解封");
-      if (currentView === 'users' && actionTargetName) {
-        manageUser(actionTargetName, allUsersData[actionTargetName], true);
-      }
-    });
-  };
-
-  window.togglePanel = function() {
-    isPanelOpen = !isPanelOpen;
-    document.getElementById('advancedPanel').style.display = isPanelOpen ? 'flex' : 'none';
-    document.getElementById('toggleBtn').innerText = isPanelOpen ? '🔼 收起高级面板' : '⚙️ 展开高级面板';
-  };
-
-  window.publishUpdate = function () {
-    const text = prompt("请输入本次系统更新公告（用户仅会看到一次，点击确定后不再弹出）：");
-    if (!text || text.trim() === "") return;
-    set(ref(db, 'system_broadcast'), {
-      action: "global_announcement",
-      text,
-      time: Date.now()
-    }).then(() => alert("更新公告已全网推送！"));
-  };
-
-  window.cancelUpdate = function () {
-    if (!confirm("⚠️ 警告：确定要撤销当前的更新公告吗？\n撤销后，你将可以发布新的公告。")) return;
-    remove(ref(db, 'system_broadcast')).then(() => {
-      alert("✅ 当前公告已撤销，你可以发布新的更新公告了！");
-    });
-  };
-
-  window.authorCreateGroup = function () {
-    const gName = prompt("新群名字：");
-    if (!gName || gName.trim() === "") return;
-    const gid = Math.floor(1000 + Math.random() * 9000).toString();
-    set(ref(db, 'group_info/' + gid), {
-      creator: AUTHOR_NAME,
-      name: gName.trim(),
-      admins: [AUTHOR_NAME],
-      members: [AUTHOR_NAME]
-    }).then(() => alert(`建群成功\n群名：${gName}\n群号：${gid}`));
-  };
-
-  window.batchBroadcast = function() {
-    const text = prompt("⚡ 输入要发送给【全网所有群】的聊天消息：");
-    if (!text || text.trim() === "") return;
-    get(ref(db, 'group_info')).then(snap => {
-      if (!snap.exists()) return alert("当前没有群聊");
-      const groups = snap.val();
-      let count = 0;
-      for (let gid in groups) {
-        push(ref(db, `groups/${gid}/messages`), {
-          sender: AUTHOR_NAME,
-          text: text,
-          time: Date.now(),
-          isAuthorMsg: true,
-          level: 999,
-          title: "神"
-        });
-        count++;
-      }
-      alert(`已批量穿透发送至 ${count} 个群！`);
-    });
-  };
-
-  window.fakeBroadcast = function() {
-    const targetName = prompt("🎭 要伪装成谁的名字？(直接输入群里的成员名)");
-    if (!targetName || targetName.trim() === "") return;
-    const text = prompt(`请输入【${targetName}】要发送的内容：`);
-    if (!text || text.trim() === "") return;
-    
-    get(ref(db, 'group_info')).then(snap => {
-      if (!snap.exists()) return alert("当前没有群聊");
-      const groups = snap.val();
-      let count = 0;
-      for (let gid in groups) {
-        push(ref(db, `groups/${gid}/messages`), {
-          sender: targetName,
-          text: text,
-          time: Date.now(),
-          level: allUsersData[targetName]?.level || 1,
-          title: allUsersData[targetName]?.title || ""
-        });
-        count++;
-      }
-      alert(`已伪装成【${targetName}】发至全网 ${count} 个群！`);
-    });
-  };
-
-  window.globalAnnouncement = function () {
-    const text = prompt("全网公告内容：");
-    if (!text || text.trim() === "") return;
-    get(ref(db, 'group_info')).then(snap => {
-      if (!snap.exists()) return alert("当前没有群聊");
-      const groups = snap.val();
-      let count = 0;
-      for (let gid in groups) {
-        push(ref(db, `groups/${gid}/messages`), {
-          sender: "📢 系统公告",
-          text,
-          time: Date.now()
-        });
-        count++;
-      }
-      alert(`已发至 ${count} 个群`);
-    });
-  };
-
-  window.clearAllGroups = function () {
-    if (!confirm("确定销毁全网所有群聊？不可恢复！")) return;
-    set(ref(db, 'system_broadcast'), { action: "delete_all_groups", time: Date.now() });
-    remove(ref(db, 'groups')).then(() => remove(ref(db, 'group_info')).then(() => {
-      alert("已清空全网群聊");
-      window.location.reload();
-    }));
-  };
-
-  window.clearAllUsers = function () {
-    if (!confirm("确定抹除所有用户？不可恢复！")) return;
-    set(ref(db, 'system_broadcast'), { action: "delete_all_users", time: Date.now() });
-    remove(ref(db, 'users')).then(() => {
-      alert("已抹除所有用户");
-      ensureAuthorUser();
-    });
-  };
-
-  window.spyGroup = function (gid) {
-    currentGroupId = gid;
-    
-    document.getElementById('chatTitle').innerHTML = `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:15px;">监控群 [${gid}]</span>
-      <button class="settings-btn" style="flex-shrink:0;" onclick="openGroupSettings()">⚙️</button>`;
-    
-    if (spyUnsub) { spyUnsub(); spyUnsub = null; }
-
-    const box = document.getElementById('chatContent');
-    box.innerHTML = '';
-
-    onValue(ref(db, 'group_info/' + gid), (snap) => {
-      if (snap.exists()) {
-        currentGroupInfo = snap.val();
-        const banner = document.getElementById('muteAllBanner');
-        if (currentGroupInfo.muteAll) {
-          banner.style.display = 'block';
-        } else {
-          banner.style.display = 'none';
-        }
-        if (document.getElementById('settingsModal').style.display === 'flex') {
-          document.getElementById('muteAllToggle').checked = !!currentGroupInfo.muteAll;
-        }
-      }
-    });
-
-    spyUnsub = onValue(query(ref(db, `groups/${gid}/messages`), limitToLast(50)), (snapshot) => {
-      if (currentGroupId !== gid || currentView !== "groups") return;
-      box.innerHTML = '';
-      if (snapshot.exists()) {
-        snapshot.forEach(child => {
-          const m = child.val();
-          addMsgUI(child.key, m.sender, m.text, m.isAuthorMsg);
-        });
-      } else {
-        box.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.4);margin-top:50px;font-size:14px;">暂无消息</div>';
-      }
-    });
-  };
-
-  window.sendMsg = function () {
-    const input = document.getElementById('msgInput');
-    const text = input.value.trim();
-    if (!text) return alert("内容不能为空");
-    if (!currentGroupId) return alert("请先选择群聊");
-
-    const mode = document.querySelector('input[name="sendMode"]:checked').value;
-    let senderName, isAuthorMsg = false;
-    if (mode === "sys") {
-      senderName = "📢 系统公告";
-    } else if (mode === "ghost") {
-      senderName = "👑 作者(隐身)";
-      isAuthorMsg = true;
-    } else {
-      senderName = AUTHOR_NAME;
-      isAuthorMsg = true;
-    }
-    push(ref(db, `groups/${currentGroupId}/messages`), {
-      sender: senderName,
-      text,
-      time: Date.now(),
-      isAuthorMsg,
-      level: 999,
-      title: "神"
-    });
-    input.value = '';
-  };
-
-  window.handleEnter = function (e) {
-    if (e.key === 'Enter') sendMsg();
-  };
-
-  function addMsgUI(msgId, sender, text, isAuthorMsg) {
-    const isSys = (sender === "📢 系统公告" || sender === "📢 系统提示");
-    const isAuthor = (sender === AUTHOR_NAME || sender === "👑 作者(隐身)" || isAuthorMsg);
-
-    const div = document.createElement('div');
-    div.className = 'msg theirs';
-    
-    if (!isSys && !isAuthor) {
-      div.style.cursor = 'pointer';
-      div.onclick = () => showActionModal(sender);
-    }
-
-    let bubbleClass = "";
-    if (isAuthor) bubbleClass = "bubble-gold";
-
-    div.innerHTML = `
-      <div class="msg-name">${escapeHtml(sender)}</div>
-      <div class="msg-text ${bubbleClass}">${escapeHtml(text)}</div>`;
-      
-    div.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      if (confirm(`撤回该消息？`)) {
-        remove(ref(db, `groups/${currentGroupId}/messages/${msgId}`));
-      }
-    });
-
-    const box = document.getElementById('chatContent');
-    box.appendChild(div);
-    box.scrollTop = box.scrollHeight;
-  }
-
-  window.openPrivateMonitor = function(roomId, u1, u2) {
-    currentPrivateRoomId = roomId;
-    localStorage.setItem('author_read_pm_' + roomId, Date.now().toString());
-    
-    document.getElementById('pmChatTitle').innerText = `正在监控: ${u1} ↔ ${u2}`;
-    document.getElementById('pmChatList').style.display = 'flex';
-    document.getElementById('pmChatEmpty').style.display = 'none';
-    
-    renderPrivateRooms();
-
-    if (privateSpyUnsub) { privateSpyUnsub(); privateSpyUnsub = null; }
-
-    const box = document.getElementById('pmChatContent');
-    box.innerHTML = '';
-
-    privateSpyUnsub = onValue(query(ref(db, `private_msgs/${currentPrivateRoomId}`), limitToLast(50)), (snapshot) => {
-      box.innerHTML = '';
-      if (snapshot.exists()) {
-        snapshot.forEach(child => {
-          const msg = child.val();
-          const div = document.createElement('div');
-          div.className = 'msg theirs';
-          div.innerHTML = `
-            <div class="msg-name" style="color:${msg.sender === AUTHOR_NAME ? '#ffd700' : '#00c6ff'};">${escapeHtml(msg.sender)}</div>
-            <div class="msg-text" style="${msg.sender === AUTHOR_NAME ? 'background:rgba(255,215,0,0.2); border-color:#ffd700;' : ''}">${escapeHtml(msg.text)}</div>
-          `;
-          box.appendChild(div);
-        });
-        setTimeout(() => { box.scrollTop = box.scrollHeight; }, 50);
-      }
-    });
-  };
-
-  window.sendPmMsg = function() {
-    const input = document.getElementById('pmInput');
-    const text = input.value.trim();
-    if (!text || !currentPrivateRoomId) return;
-    push(ref(db, `private_msgs/${currentPrivateRoomId}`), {
-      sender: AUTHOR_NAME,
-      text: text,
-      time: Date.now()
-    });
-    input.value = '';
-  };
-
-  window.handlePmEnter = function(e) {
-    if (e.key === 'Enter') sendPmMsg();
-  };
-
-  window.openGroupSettings = function () {
-    if (!currentGroupId) return alert("请先选择群聊");
-    document.getElementById('settingsModal').style.display = 'flex';
-    document.getElementById('displayGroupId').innerText = currentGroupId;
-    loadMemberList();
-    document.getElementById('muteAllToggle').checked = !!currentGroupInfo.muteAll;
-  };
-
-  window.closeSettings = function () {
-    document.getElementById('settingsModal').style.display = 'none';
-  };
-
-  window.copyGroupId = function () {
-    navigator.clipboard.writeText(currentGroupId).then(() => alert("群号已复制！"));
-  };
-
-  window.toggleMuteAll = function(e) {
-    const isChecked = e.target.checked;
-    update(ref(db, 'group_info/' + currentGroupId), { muteAll: isChecked }).then(() => {
-      push(ref(db, `groups/${currentGroupId}/messages`), {
-        sender: "📢 系统公告",
-        text: isChecked ? `作者开启了全员禁言` : `作者解除了全员禁言`,
-        time: Date.now()
-      });
-    });
-  };
-
-  window.clearGroupChat = function () {
-    if (!confirm("⚠️ 警告：确定要清空该群的全部聊天记录吗？\n（包括系统公告，此操作会同步到所有玩家）")) return;
-    remove(ref(db, `groups/${currentGroupId}/messages`)).then(() => {
-      push(ref(db, `groups/${currentGroupId}/messages`), {
-        sender: "📢 系统公告",
-        text: `作者已清空本群的聊天记录`,
-        time: Date.now()
-      });
-      alert("聊天记录已彻底清空！");
-      closeSettings();
-    }).catch(err => {
-      alert("清空失败：" + err.message);
-    });
-  };
-
-  function loadMemberList() {
-    const memberListEl = document.getElementById('memberList');
-    memberListEl.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.5);padding:10px;">正在扫描成员...</div>';
-
-    const membersSet = new Set();
-    if (currentGroupInfo.members) currentGroupInfo.members.forEach(m => membersSet.add(m));
-    if (currentGroupInfo.creator) membersSet.add(currentGroupInfo.creator);
-
-    memberListEl.innerHTML = '';
-    membersSet.forEach(member => {
-      const isMemberBoss = (member === currentGroupInfo.creator);
-      const isMemberAdmin = currentGroupInfo.admins && currentGroupInfo.admins.includes(member);
-      let tag = isMemberBoss ? "👑 群主" : (isMemberAdmin ? "🛡️ 管理员" : "");
-
-      const row = document.createElement('div');
-      row.style = `display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.1);cursor:pointer;`;
-      row.onclick = () => {
-        closeSettings();
-        showActionModal(member);
-      };
-      row.innerHTML = `
-        <div>
-          <span style="font-weight:bold;color:#fff;">${escapeHtml(member)}</span>
-          <span style="font-size:12px;color:#f39c12;font-weight:bold;">${tag}</span>
-        </div>
-        <span style="font-size:12px;color:rgba(255,255,255,0.4);">点此操作 ›</span>`;
-      memberListEl.appendChild(row);
-    });
-  }
-
-  window.showActionModal = function (targetName) {
-    actionTargetName = targetName;
-    document.getElementById('modalTargetName').innerText = targetName;
-
-    const pmBtn = document.getElementById('btnStartPM');
-    if (pmBtn) {
-      pmBtn.style.display = 'block';
-      pmBtn.onclick = () => {
-        closeActionModal();
-        alert("请到左侧【私聊监控】列表中寻找与该用户的聊天房间进行插话。");
-      };
-    }
-
-    const violationBtn = document.getElementById('manualViolationBtn');
-    if (violationBtn) {
-      violationBtn.style.display = 'block';
-    }
-
-    get(ref(db, `group_info/${currentGroupId}`)).then(groupSnap => {
-      if (!groupSnap.exists()) return;
-      const info = groupSnap.val();
-      const isTargetAdmin = (info.admins && info.admins.includes(targetName));
-      const isTargetOwner = info.creator === targetName;
-      
-      const btnSetAdmin = document.getElementById('btnSetAdmin');
-      if (isTargetOwner) {
-        btnSetAdmin.innerText = '该用户是群主';
-        btnSetAdmin.disabled = true;
-        btnSetAdmin.style.opacity = '0.5';
-        btnSetAdmin.style.cursor = 'not-allowed';
-      } else {
-        btnSetAdmin.disabled = false;
-        btnSetAdmin.style.opacity = '1';
-        btnSetAdmin.style.cursor = 'pointer';
-        btnSetAdmin.innerText = isTargetAdmin ? '撤销管理员' : '设为管理员';
-        btnSetAdmin.onclick = isTargetAdmin ? removeAdminTarget : addAdminTarget;
-      }
-    });
-
-    get(ref(db, `groups/${currentGroupId}/muted/${targetName}`)).then(muteSnap => {
-      const btn = document.getElementById('btnMute');
-      if (muteSnap.exists() && muteSnap.val() > Date.now()) {
-        btn.innerText = '解除禁言';
-        btn.style.background = 'rgba(52,199,89,0.2)';
-        btn.style.color = '#30d158';
-        btn.onclick = unmuteTarget;
-      } else {
-        btn.innerText = '禁言该用户';
-        btn.style.background = 'rgba(255,149,0,0.2)';
-        btn.style.color = '#ff9500';
-        btn.onclick = muteTarget;
-      }
-    });
-
-    document.getElementById('actionModal').style.display = 'flex';
-  };
-
-  window.closeActionModal = function () {
-    document.getElementById('actionModal').style.display = 'none';
-  };
-
-  window.manualViolation = function () {
-    if (!actionTargetName) return;
-    const reason = prompt(`请输入【${actionTargetName}】的违规原因或内容：`);
-    if (reason === null) return;
-    
-    get(ref(db, 'violations/' + actionTargetName)).then(snap => {
-      const currentCount = snap.exists() ? snap.val().count : 0;
-      set(ref(db, 'violations/' + actionTargetName), {
-        count: currentCount + 1,
-        lastTime: Date.now(),
-        lastWord: reason || "（作者手动标记）"
-      }).then(() => {
-        alert(`已成功将【${actionTargetName}】标记为违规。`);
-        closeActionModal();
-      });
-    });
-  };
-
-  window.addAdminTarget = function () {
-    get(ref(db, 'group_info/' + currentGroupId)).then(snap => {
-      if (!snap.exists()) return;
-      let admins = snap.val().admins || [];
-      if (!admins.includes(actionTargetName)) {
-        admins.push(actionTargetName);
-        update(ref(db, 'group_info/' + currentGroupId), { admins: admins }).then(() => {
-          push(ref(db, `groups/${currentGroupId}/messages`), {
-            sender: "📢 系统公告",
-            text: `${actionTargetName} 被作者设为管理员`,
-            time: Date.now()
-          });
-          closeActionModal();
-        });
-      }
-    });
-  };
-
-  window.removeAdminTarget = function () {
-    get(ref(db, 'group_info/' + currentGroupId)).then(snap => {
-      if (!snap.exists()) return;
-      let admins = snap.val().admins || [];
-      const newAdmins = admins.filter(a => a !== actionTargetName);
-      update(ref(db, 'group_info/' + currentGroupId), { admins: newAdmins }).then(() => {
-        push(ref(db, `groups/${currentGroupId}/messages`), {
-          sender: "📢 系统公告",
-          text: `${actionTargetName} 被撤销管理员`,
-          time: Date.now()
-        });
-        closeActionModal();
-      });
-    });
-  };
-
-  window.muteTarget = function () {
-    const t = prompt(`禁言【${actionTargetName}】多久？\n1m / 1h / 1d / 1e+99d（永久）`);
-    if (!t) return;
-    const ms = parseTimeInput(t);
-    if (ms === 0) return alert("时间格式错误");
-    set(ref(db, `groups/${currentGroupId}/muted/${actionTargetName}`), Date.now() + ms).then(() => {
-      push(ref(db, `groups/${currentGroupId}/messages`), {
-        sender: "📢 系统公告",
-        text: `${actionTargetName} 已被禁言 ${t}`,
-        time: Date.now()
-      });
-      closeActionModal();
-    });
-  };
-
-  window.unmuteTarget = function () {
-    remove(ref(db, `groups/${currentGroupId}/muted/${actionTargetName}`)).then(() => {
-      push(ref(db, `groups/${currentGroupId}/messages`), {
-        sender: "📢 系统公告",
-        text: `${actionTargetName} 已解除禁言`,
-        time: Date.now()
-      });
-      closeActionModal();
-    });
-  };
-
-  window.kickTarget = function () {
-    if (!confirm(`确认踢出【${actionTargetName}】？`)) return;
-    const gid = currentGroupId;
-    const target = actionTargetName;
-    get(ref(db, 'group_info/' + gid)).then(snap => {
-      if (!snap.exists()) return;
-      const info = snap.val();
-      const updates = {};
-      
-      const members = (info.members || []).filter(m => m !== target);
-      updates[`group_info/${gid}/members`] = members;
-      
-      const admins = (info.admins || []).filter(a => a !== target);
-      updates[`group_info/${gid}/admins`] = admins;
-      
-      updates[`group_info/${gid}/kicked/${target}`] = true;
-      updates[`groups/${gid}/muted/${target}`] = null;
-
-      update(ref(db), updates).then(() => {
-        push(ref(db, `groups/${gid}/messages`), {
-          sender: "📢 系统公告",
-          text: `${target} 已被踢出`,
-          time: Date.now()
-        });
-        closeActionModal();
-      }).catch(e => alert("踢人失败：" + e.message));
-    });
-  };
-
-  window.openPullModal = function () {
-    if (!currentGroupId) return alert("请先选择群聊");
-    get(ref(db, `group_info/${currentGroupId}`)).then(snap => {
-      if (!snap.exists()) return alert("群不存在");
-      document.getElementById('pullModal').style.display = 'flex';
-      get(ref(db, 'users')).then(usersSnap => {
-        const listEl = document.getElementById('pullUserList');
-        listEl.innerHTML = '';
-        if (usersSnap.exists()) {
-          const users = usersSnap.val();
-          const members = snap.val().members || [];
-          for (let uname in users) {
-            const inGroup = members.includes(uname);
-            const row = document.createElement('div');
-            row.style = "display:flex;align-items:center;justify-content:space-between;padding:12px;border-bottom:1px solid rgba(255,255,255,0.1);";
-            row.innerHTML = `
-              <span style="color:#fff;font-weight:bold;">${escapeHtml(uname)}${inGroup ? ' <span style="color:#30d158;font-size:11px;">(已在群)</span>' : ''}</span>
-              <input type="checkbox" class="pull-checkbox" value="${escapeAttr(uname)}" ${inGroup ? 'checked disabled' : ''}
-                style="width:20px;height:20px;accent-color:#0a84ff;">`;
-            listEl.appendChild(row);
-          }
-        }
-      });
-    });
-  };
-
-  window.closePullModal = function () {
-    document.getElementById('pullModal').style.display = 'none';
-  };
-
-  window.confirmPull = function () {
-    const boxes = document.querySelectorAll('.pull-checkbox:checked:not(:disabled)');
-    if (boxes.length === 0) return alert("请勾选要拉入的用户");
-    get(ref(db, `group_info/${currentGroupId}`)).then(snap => {
-      if (!snap.exists()) return alert("群不存在");
-      let members = snap.val().members ? [...snap.val().members] : [];
-      const added = [];
-      boxes.forEach(b => {
-        if (!members.includes(b.value)) { members.push(b.value); added.push(b.value); }
-      });
-      if (added.length === 0) return alert("勾选的用户都已在群中");
-      update(ref(db, `group_info/${currentGroupId}`), { members }).then(() => {
-        push(ref(db, `groups/${currentGroupId}/messages`), {
-          sender: "📢 系统提示",
-          text: `作者强制邀请 ${added.join('、')} 加入了群聊`,
-          time: Date.now()
-        });
-        alert(`已强制拉入 ${added.length} 人`);
-        closePullModal();
-      });
-    });
-  };
-
-  window.switchLeftView = function (view, btn) {
-    document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    
-    document.getElementById('groupsView').style.display = 'none';
-    document.getElementById('usersListView').style.display = 'none';
-    document.getElementById('violationsView').style.display = 'none';
-    document.getElementById('reportsView').style.display = 'none';
-    document.getElementById('plazaView').style.display = 'none';
-    document.getElementById('privateListView').style.display = 'none';
-    
-    document.getElementById('chatView').style.display = 'none';
-    document.getElementById('usersView').style.display = 'none';
-    document.getElementById('privateView').style.display = 'none';
-
-    if (view === 'groups') {
-      document.getElementById('groupsView').style.display = 'block';
-      document.getElementById('chatView').style.display = 'flex';
-      currentView = 'groups';
-    } else if (view === 'users') {
-      document.getElementById('usersListView').style.display = 'block';
-      document.getElementById('usersView').style.display = 'flex';
-      currentView = 'users';
-    } else if (view === 'violations') {
-      document.getElementById('violationsView').style.display = 'block';
-      document.getElementById('usersView').style.display = 'flex';
-      currentView = 'violations';
-      renderViolations();
-    } else if (view === 'reports') {
-      document.getElementById('reportsView').style.display = 'block';
-      document.getElementById('usersView').style.display = 'flex';
-      currentView = 'reports';
-      renderReports();
-    } else if (view === 'plaza') {
-      document.getElementById('plazaView').style.display = 'block';
-      document.getElementById('usersView').style.display = 'flex';
-      currentView = 'plaza';
-      if (!plazaUnsub) {
-        plazaUnsub = onValue(query(ref(db, 'plaza'), limitToLast(50)), (snap) => {
-          plazaData = snap.exists() ? snap.val() : {};
-          renderPlaza();
-        });
-      }
-    } else if (view === 'private') {
-      document.getElementById('privateListView').style.display = 'block';
-      document.getElementById('privateView').style.display = 'flex';
-      currentView = 'private';
-      renderPrivateRooms();
-      
-      const badge = document.getElementById('authorPmBadge');
-      if (badge) badge.style.display = 'none';
-    }
-
-    if (view !== 'groups' && spyUnsub) { spyUnsub(); spyUnsub = null; }
-    if (view !== 'private' && privateSpyUnsub) { privateSpyUnsub(); privateSpyUnsub = null; }
-  };
-
-  window.onload = checkAuthorGate;
-</script>
+<title>游戏作者端 · 上帝控制台</title>
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; -webkit-tap-highlight-color:transparent; }
-  body { background:#000; color:#fff; height:100vh; height:100dvh; display:flex; overflow:hidden; position:relative; }
-  
-  .aurora-bg {
-    position: fixed;
-    top: -50vh;
-    left: -50vw;
-    width: 200vw;
-    height: 200vh;
-    background:
-      radial-gradient(circle at 20% 30%, rgba(100,200,255,0.4) 0%, transparent 40%),
-      radial-gradient(circle at 80% 70%, rgba(255,100,200,0.4) 0%, transparent 40%);
-    animation: spin 20s linear infinite;
-    filter: blur(50px);
-    z-index: -999;
-    pointer-events: none;
-  }
-  @keyframes spin { 100% { transform:rotate(360deg); } }
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; -webkit-tap-highlight-color:transparent; }
+body { background:#000; color:#fff; height:100vh; height:100dvh; display:flex; overflow:hidden; }
+#gateScreen { position:fixed; inset:0; background:#0a0a0f; display:flex; justify-content:center; align-items:center; padding:20px; z-index:99999; overflow-y:auto; }
+#gateScreen .box { background:rgba(30,30,30,0.8); backdrop-filter:blur(30px); border:1px solid rgba(255,255,255,0.15); padding:36px 28px; border-radius:24px; width:85%; max-width:340px; }
+#gateScreen h1 { color:#ffd700; text-align:center; margin-bottom:20px; font-size:22px; }
+#gateScreen input { width:100%; padding:14px; border:1px solid rgba(255,255,255,0.15); border-radius:12px; background:rgba(0,0,0,0.5); color:#fff; outline:none; font-size:16px; margin-bottom:12px; }
+#gateScreen button { width:100%; padding:15px; border:none; border-radius:12px; background:linear-gradient(135deg,#ffd700,#ff8c00); color:#000; font-weight:800; font-size:16px; cursor:pointer; }
+#gateScreen .err { color:#ff3b30; text-align:center; font-size:13px; margin-top:10px; min-height:20px; white-space:pre-wrap; }
 
-  .sidebar {
-    width:35%; max-width:320px; min-width:130px;
-    background:rgba(20,20,20,0.6); backdrop-filter:blur(20px);
-    border-right:1px solid rgba(255,255,255,0.1);
-    display:flex; flex-direction:column; flex-shrink:0;
-    z-index: 10;
-  }
-  .sidebar-header { padding:15px 10px; border-bottom:1px solid rgba(255,255,255,0.1); flex-shrink:0; }
-  .sidebar-header h1 {
-    font-size:16px; color:#ffd700; margin-bottom:15px; text-align:center;
-    white-space:nowrap; text-shadow:0 0 15px rgba(255,215,0,0.5); font-weight:800;
-  }
-  .view-switch { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:5px; margin-bottom:15px; }
-  .view-btn {
-    padding:8px 2px; background:rgba(255,255,255,0.05);
-    color:rgba(255,255,255,0.6); border:1px solid rgba(255,255,255,0.1);
-    border-radius:8px; font-weight:bold; font-size:11px; cursor:pointer;
-    transition:0.2s; text-align:center; position: relative;
-  }
-  .view-btn.active { background:rgba(255,215,0,0.2); color:#ffd700; border-color:rgba(255,215,0,0.5); }
-  
-  #toggleBtn {
-    width: 100%; padding: 10px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-    color: #00c6ff; font-weight: bold; font-size: 13px; border-radius: 10px; cursor: pointer; transition: 0.2s;
-  }
-  #toggleBtn:active { background: rgba(255,255,255,0.1); }
+#app { display:none; flex:1; }
+.sidebar { width:34%; max-width:340px; min-width:110px; background:rgba(20,20,20,0.7); backdrop-filter:blur(20px); border-right:1px solid rgba(255,255,255,0.1); display:flex; flex-direction:column; }
+.sidebar-header { padding:14px; border-bottom:1px solid rgba(255,255,255,0.1); font-size:14px; font-weight:800; color:#ffd700; text-align:center; }
+#playerList { flex:1; overflow-y:auto; padding:8px; -webkit-overflow-scrolling:touch; }
+.player-item { padding:10px; margin-bottom:6px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); border-radius:10px; cursor:pointer; user-select: none; }
+.player-item:active { background:rgba(255,255,255,0.12); }
+.main-area { flex:1; overflow-y:auto; padding:14px; background:rgba(10,10,10,0.6); -webkit-overflow-scrolling:touch; }
+.card { background:rgba(30,30,30,0.6); border:1px solid rgba(255,255,255,0.1); border-radius:14px; padding:14px; margin-bottom:12px; }
+.card-title { font-size:14px; font-weight:800; color:#00c6ff; margin-bottom:10px; }
+.btn { width:100%; padding:12px; border:none; border-radius:10px; font-weight:700; font-size:14px; cursor:pointer; background:rgba(0,198,255,0.15); color:#00c6ff; border:1px solid rgba(0,198,255,0.3); margin-bottom:8px; }
+.btn-red { background:rgba(255,59,48,0.15); color:#ff453a; border-color:rgba(255,59,48,0.3); }
+.btn-green { background:rgba(52,199,89,0.15); color:#30d158; border-color:rgba(52,199,89,0.3); }
+.btn-gold { background:rgba(255,215,0,0.15); color:#ffd700; border-color:rgba(255,215,0,0.3); }
+.btn-purple { background:rgba(156,39,176,0.15); color:#ce93d8; border-color:rgba(156,39,176,0.3); }
+.btn-jade { background:rgba(0,229,255,0.15); color:#00e5ff; border-color:rgba(0,229,255,0.3); }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 
-  .danger-zone { display:none; flex-direction:column; gap:8px; margin-top: 10px; padding: 10px; background: rgba(0,0,0,0.4); border-radius: 10px; }
-  
-  .btn-batch { background:rgba(0,198,255,0.15); color:#00c6ff; border:1px solid rgba(0,198,255,0.4); padding:10px 4px; border-radius:10px; font-weight:bold; cursor:pointer; font-size:12px; }
-  .btn-fake { background:rgba(255,0,128,0.15); color:#ff0080; border:1px solid rgba(255,0,128,0.4); padding:10px 4px; border-radius:10px; font-weight:bold; cursor:pointer; font-size:12px; }
-  .danger-btn { background:rgba(255,59,48,0.1); color:#ff453a; border:1px solid rgba(255,59,48,0.3); padding:10px 4px; border-radius:10px; font-weight:bold; cursor:pointer; font-size:12px; }
-  .global-btn { background:rgba(255,0,255,0.1); color:#ff00ff; border:1px solid rgba(255,0,255,0.3); padding:10px 4px; border-radius:10px; font-weight:bold; cursor:pointer; font-size:12px; }
-  .pull-btn { background:rgba(10,132,255,0.15); color:#0a84ff; border:1px solid rgba(10,132,255,0.4); padding:10px 4px; border-radius:10px; font-weight:bold; cursor:pointer; font-size:12px; }
-  .create-btn { background:rgba(52,199,89,0.15); color:#30d158; border:1px solid rgba(52,199,89,0.4); padding:10px 4px; border-radius:10px; font-weight:bold; cursor:pointer; font-size:12px; }
-
-  .list-container { flex:1; overflow-y:auto; padding:10px; -webkit-overflow-scrolling:touch; }
-  .list-item {
-    padding:14px; border-radius:12px; cursor:pointer; font-size:13px; line-height:1.5;
-    background:rgba(255,255,255,0.05); margin-bottom:10px;
-    border:1px solid rgba(255,255,255,0.08); border-left:3px solid #0a84ff; transition:0.2s;
-  }
-  .list-item:hover { background:rgba(255,255,255,0.1); }
-  .user-item { border-left-color:#f1c40f; }
-
-  .main-area { flex:1; display:flex; flex-direction:column; background:rgba(10,10,10,0.5); backdrop-filter:blur(10px); min-width:0; z-index: 5; }
-  #chatView { display:flex; flex-direction:column; flex:1; height:100%; min-height:0; }
-  
-  .chat-header {
-    padding:15px 20px; background:rgba(0,0,0,0.4); border-bottom:1px solid rgba(255,255,255,0.1);
-    font-size:15px; flex-shrink:0; font-weight:600; color:#fff;
-    display:flex; justify-content:space-between; align-items:center; width:100%;
-  }
-  .settings-btn {
-    background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2);
-    font-size:18px; cursor:pointer; color:#fff; border-radius:10px; 
-    padding:6px 12px; transition:0.2s; flex-shrink:0;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .settings-btn:active { background:rgba(255,255,255,0.2); transform:scale(0.95); }
-  
-  .chat-content {
-    flex:1; padding:20px; overflow-y:auto; display:flex; flex-direction:column;
-    gap:15px; -webkit-overflow-scrolling:touch;
-  }
-  .msg { display:flex; flex-direction:column; max-width:80%; align-self:flex-start; }
-  .msg-name { font-size:12px; color:rgba(255,255,255,0.6); margin-bottom:6px; }
-  .msg-text {
-    padding:12px 16px; border-radius:16px; font-size:15px; line-height:1.4;
-    word-break:break-all; background:rgba(255,255,255,0.1); color:#fff;
-    border:1px solid rgba(255,255,255,0.1); backdrop-filter:blur(10px);
-  }
-  
-  .bubble-gold {
-    background:linear-gradient(135deg,#ffd700,#ff8c00) !important;
-    color:#000 !important; font-weight:900; border:1px solid #ffeb3b !important;
-    box-shadow:0 0 25px rgba(255,215,0,0.8) !important;
-    animation:goldPulse 1.8s infinite;
-    text-shadow: 0 1px 2px rgba(255,255,255,0.5);
-  }
-  @keyframes goldPulse {
-    0% { box-shadow:0 0 12px rgba(255,215,0,0.4); }
-    50% { box-shadow:0 0 28px rgba(255,215,0,1); }
-    100% { box-shadow:0 0 12px rgba(255,215,0,0.4); }
-  }
-
-  .input-area {
-    padding:15px; background:rgba(0,0,0,0.5); border-top:1px solid rgba(255,255,255,0.1);
-    display:flex; flex-direction:column; gap:10px;
-    padding-bottom:calc(15px + env(safe-area-inset-bottom)); flex-shrink:0;
-  }
-  .mode-select { display:flex; gap:15px; font-size:12px; color:rgba(255,255,255,0.7); overflow-x:auto; white-space:nowrap; }
-  .mode-select label { display:flex; align-items:center; gap:6px; cursor:pointer; }
-  .input-row { display:flex; gap:10px; }
-  .input-row input {
-    flex:1; padding:14px; border-radius:14px; border:1px solid rgba(255,255,255,0.1);
-    background:rgba(255,255,255,0.05); color:#fff; outline:none; font-size:15px; min-width:0;
-  }
-  .input-row button {
-    background:linear-gradient(135deg,#ffd700,#ff8c00); color:#000; border:none;
-    padding:0 20px; border-radius:14px; font-weight:bold; cursor:pointer; flex-shrink:0;
-  }
-
-  #usersView { display:none; flex-direction:column; padding:20px; flex:1; overflow-y:auto; }
-  #userManageTitle { font-size:20px; color:#f1c40f; margin-bottom:20px; font-weight:800; }
-  .user-manage-card {
-    background:rgba(30,30,30,0.8); padding:20px; border-radius:20px;
-    border:1px solid rgba(255,255,255,0.1); backdrop-filter:blur(20px);
-  }
-  .user-manage-card button {
-    width:100%; padding:14px; border-radius:12px; border:none;
-    font-weight:bold; font-size:15px; cursor:pointer; margin-bottom:12px;
-  }
-  .btn-purple { background:rgba(155,89,182,0.2); color:#9b59b6; border:1px solid rgba(155,89,182,0.4); }
-  .btn-blue { background:rgba(10,132,255,0.2); color:#0a84ff; border:1px solid rgba(10,132,255,0.4); }
-  .btn-red { background:rgba(255,59,48,0.2); color:#ff453a; border:1px solid rgba(255,59,48,0.4); }
-  .btn-dark-red { background:rgba(142,68,173,0.2); color:#8e44ad; border:1px solid rgba(142,68,173,0.4); }
-  .btn-green { background:rgba(52,199,89,0.2); color:#30d158; border:1px solid rgba(52,199,89,0.4); }
-  .btn-orange { background:rgba(255,149,0,0.2); color:#ff9500; border:1px solid rgba(255,149,0,0.4); }
-  .btn-pink { background:rgba(255,0,128,0.2); color:#ff0080; border:1px solid rgba(255,0,128,0.4); }
-
-  #actionModal, #pullModal, #settingsModal {
-    position:fixed; top:0; left:0; width:100%; height:100%;
-    background:rgba(0,0,0,0.7); backdrop-filter:blur(10px);
-    display:none; justify-content:center; align-items:center; z-index:9999;
-  }
-  .action-box, .pull-box, .modal-box {
-    background:rgba(30,30,30,0.95); backdrop-filter:blur(30px);
-    border:1px solid rgba(255,255,255,0.15); width:85%; max-width:320px;
-    padding:24px; border-radius:24px; display:flex; flex-direction:column;
-    gap:12px; box-shadow:0 20px 50px rgba(0,0,0,0.6); max-height:80vh;
-    overflow-y: auto;
-  }
-  .action-box h3, .pull-box h3, .modal-box h3 { text-align:center; margin-bottom:10px; color:#fff; font-size:18px; font-weight:800; }
-  .action-box button, .pull-box button, .modal-box button {
-    padding:14px; border-radius:12px; font-weight:600; font-size:16px; cursor:pointer; border:none;
-  }
-  .btn-close { background:rgba(255,255,255,0.1); color:#fff; margin-top:5px; }
-  .pull-list {
-    flex:1; overflow-y:auto; max-height:40vh;
-    background:rgba(0,0,0,0.2); border-radius:12px; padding:5px; margin-bottom:10px;
-  }
-  .member-list {
-    margin-top:10px; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px;
-  }
-
-  #privateView { display:none; flex-direction:column; flex:1; height:100%; }
-  #pmChatList { display:none; flex-direction:column; flex:1; }
-
-  .badge {
-    position: absolute;
-    top: -5px;
-    right: -5px;
-    background: #ff3b30;
-    color: #fff;
-    font-size: 10px;
-    font-weight: bold;
-    padding: 2px 6px;
-    border-radius: 10px;
-    box-shadow: 0 2px 5px rgba(255,59,48,0.5);
-    display: none;
-    z-index: 10;
-  }
+.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.8); backdrop-filter:blur(10px); z-index:999999; display:none; justify-content:center; align-items:center; padding:20px; }
+.modal-box { background:rgba(30,30,30,0.95); border:1px solid rgba(255,255,255,0.15); border-radius:24px; width:90%; max-width:400px; max-height:80vh; display:flex; flex-direction:column; padding:20px; }
+.modal-title { font-size:18px; font-weight:900; color:#ffd700; text-align:center; margin-bottom:15px; }
+.modal-content { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; gap:8px;}
+.modal-close { margin-top:15px; padding:12px; border-radius:12px; background:rgba(255,255,255,0.1); color:#fff; border:none; font-weight:bold; cursor:pointer; }
+.list-item { padding:10px 12px; background:rgba(255,255,255,0.05); border-radius:8px; font-size:13px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
+.list-item:active { background:rgba(255,255,255,0.15); }
 </style>
 </head>
 <body>
-  <div class="aurora-bg"></div>
 
-  <div class="sidebar">
-    <div class="sidebar-header">
-      <h1>作者控制台</h1>
-      <div class="view-switch">
-        <button class="view-btn active" onclick="switchLeftView('groups', this)">群聊</button>
-        <button class="view-btn" onclick="switchLeftView('users', this)">用户</button>
-        <button class="view-btn" onclick="switchLeftView('violations', this)">违规</button>
-        <button class="view-btn" onclick="switchLeftView('reports', this)">举报</button>
-        <button class="view-btn" onclick="switchLeftView('plaza', this)">广场</button>
-        <button class="view-btn" onclick="switchLeftView('private', this)">私聊监控<span class="badge" id="authorPmBadge">0</span></button>
-      </div>
-      
-      <button id="toggleBtn" onclick="togglePanel()">⚙️ 展开高级面板</button>
-      <div id="advancedPanel" class="danger-zone">
-        <button class="create-btn" onclick="publishUpdate()" style="background:rgba(255,215,0,0.15);color:#ffd700;border-color:rgba(255,215,0,0.4);">📢 发布版本更新</button>
-        <button class="danger-btn" onclick="cancelUpdate()" style="background:rgba(255,59,48,0.15);color:#ff453a;border-color:rgba(255,59,48,0.4);">🗑️ 撤销当前更新公告</button>
-        <button class="btn-batch" onclick="batchBroadcast()">⚡ 批量穿透发言</button>
-        <button class="btn-fake" onclick="fakeBroadcast()">🎭 伪装全网发言</button>
-        <button class="create-btn" onclick="authorCreateGroup()">➕ 作者建群</button>
-        <button class="pull-btn" onclick="openPullModal()">👥 强制拉人</button>
-        <button class="global-btn" onclick="globalAnnouncement()">📢 全网聊天公告</button>
-        <button class="btn-orange" onclick="openPendingPanel()" style="background:rgba(255,149,0,0.15);color:#ff9500;border-color:rgba(255,149,0,0.4);">📋 注册审核</button>
-        <button class="danger-btn" onclick="clearAllGroups()">☢️ 销毁全网群聊</button>
-        <button class="danger-btn" onclick="clearAllUsers()">☢️ 抹除所有用户</button>
-      </div>
-
-    </div>
-    <div class="list-container" id="groupsView"><div id="groupList"></div></div>
-    <div class="list-container" id="usersListView" style="display:none;"><div id="userList"></div></div>
-    <div class="list-container" id="violationsView" style="display:none;"><div id="violationsList"></div></div>
-    <div class="list-container" id="reportsView" style="display:none;"><div id="reportsList"></div></div>
-    <div class="list-container" id="plazaView" style="display:none;"><div id="plazaList"></div></div>
-    <div class="list-container" id="privateListView" style="display:none;"><div id="privateRoomList"></div></div>
+<div id="gateScreen">
+  <div class="box">
+    <h1>🎮 作者上帝端</h1>
+    <input id="pwdInput" type="password" placeholder="作者密钥" autocomplete="off">
+    <button id="gateBtn" type="button">进入</button>
+    <div class="err" id="gateErr"></div>
   </div>
+</div>
 
-  <div class="main-area">
-    <div id="chatView">
-      <div class="chat-header" id="chatTitle">
-        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">请点击左侧群聊</span>
-        <button class="settings-btn" onclick="openGroupSettings()">⚙️</button>
-      </div>
+<div id="app">
+  <div class="sidebar">
+    <div class="sidebar-header">🎮 玩家列表 (长按可删)</div>
+    <div id="playerList"><div style="color:#666;text-align:center;padding:20px;font-size:12px;">加载中...</div></div>
+  </div>
+  <div class="main-area" id="playerDetail">
+    <div style="text-align:center;color:#666;padding:50px;font-size:14px;">点击左侧玩家查看详情</div>
+  </div>
+</div>
 
-      <div id="muteAllBanner" style="display:none; background:linear-gradient(90deg, rgba(255,59,48,0.8), rgba(255,0,127,0.8)); color:#fff; text-align:center; padding:8px; font-size:13px; font-weight:bold; text-shadow:0 1px 2px rgba(0,0,0,0.5); flex-shrink:0;">
-        ⚠️ 群主开启了全员禁言
-      </div>
+<div class="modal-overlay" id="selectModal">
+  <div class="modal-box">
+    <div class="modal-title" id="selectModalTitle">请选择</div>
+    <div class="modal-content" id="selectModalContent"></div>
+    <button class="modal-close" onclick="document.getElementById('selectModal').style.display='none'">取消</button>
+  </div>
+</div>
 
-      <div class="chat-content" id="chatContent">
-        <div style="text-align:center;color:rgba(255,255,255,0.4);margin-top:50px;font-size:14px;">等待接入</div>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getDatabase, ref, get, set, update, push, onValue, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+const firebaseConfig = { databaseURL: "https://class3b-5b39b-default-rtdb.asia-southeast1.firebasedatabase.app" };
+const AUTHOR_PWD = "f2519484";
+const AUTH_KEY = "game_admin_auth_v2";
+
+const QUALITY_NAMES = ['凡品','下品','中品','上品','极品','仙品','神品','至宝','灵宝','玄宝','天宝','圣宝','道宝','尊宝','王宝','皇宝','帝宝','君宝','仙宝','神宝','圣尊宝','道尊宝','天主宝','圣天主宝','道天主宝','混沌至宝','鸿蒙至宝','星辰神石','紫微神石','太初神石','混元道果','天道道果','大道道果','鸿蒙道果','无极道果','太上道果','造化玉碟','混沌珠','盘古斧','东皇钟','太极图','诛仙剑','山河社稷图','炼妖壶','昊天塔','伏羲琴','神农鼎','昆仑镜','崆峒印','凤凰琴','九霄环佩','天问神剑','太虚神甲','大罗天衣','无极仙袍','造化仙袍','鸿蒙仙袍','圣道仙袍','天道仙袍','大道仙袍','混沌至宝','鸿蒙本源','宇宙本源','万物母气','天地玄黄','鸿蒙紫气','大道法则','混沌法则','终极本源','起源之石','维度结晶','时空沙漏','因果之丝','命运纺锤','虚无之源','创世神剑','灭世黑莲','不朽神座','永恒天舟','星空古路','神话之翼','纪元之书','真理之眼','无尽深渊','璀璨星海','神魔之血','仙帝传承','天道载体','大道仙宫','混元道胎','无极神图','鸿蒙紫府','造化玉盘','太上道剑','混沌神鼎','鸿蒙圣衣','本源神格','宇宙之心','万物母胎','鸿蒙青莲','创世青莲','灭世黑莲','造化青莲','混沌青莲','大道青莲','天道青莲','鸿蒙青莲','虚无青莲','终焉青莲'];
+const PART_NAMES = { weapon:'武器', helmet:'头盔', armor:'护甲', boots:'靴子', ring:'戒指', necklace:'项链', belt:'腰带', artifact:'法宝' };
+const PART_KEYS = ['weapon','helmet','armor','boots','ring','necklace','belt','artifact'];
+const REALM_NAMES = ['炼气','筑基','金丹','元婴','化神','炼虚','合体','大乘','渡劫','真仙','玄仙','地仙','天仙','金仙','大罗金仙','混元大罗金仙','准圣','圣人','天道圣人','大道圣人','鸿蒙圣人','造化圣人','混元圣人','无极圣人','太上圣人','混沌圣人','鸿蒙主宰','大道主宰','无极大道','太初大道','太易大道','太始大道','太素大道','太极大道','混元无极大罗金仙','混元太上无极金仙','混元太初无上金仙','混元太易无上金仙','混元太始无上金仙','混元太素无上金仙','混元太极无上金仙','混元太极大罗金仙','混元无极太上金仙','混元无上太初金仙','混元无上太易金仙','混元无上太始金仙','混元无上太素金仙','混元无上太极金仙','混元无极天道圣人','混元无上大道圣人','混元无极鸿蒙圣人','混元无上造化圣人','混元无极混元圣人','混元无上无极圣人','混元无极太上圣人','混元无上混沌圣人','混元无极鸿蒙主宰','混元无上大道主宰','混元无极无极大道','太上无极混元无上大道','太上无极混元无上天道','太上无极混元无上鸿蒙','太上无极混元无上造化','太上无极混元无上混沌','太上无极混元无上本源','太上无极混元无上终极','大道本源无上主宰','鸿蒙本源无上主宰','混沌本源无上主宰','宇宙本源无上主宰','万物本源无上主宰','终极本源无上主宰'];
+const PET_NAMES = ['灵狐','火麒麟','九尾狐','白虎','朱雀','玄武','青龙','穷奇','饕餮','混沌','梼杌','金乌','鲲鹏','凤凰','麒麟','狻猊','睚眦','囚牛','蒲牢','霸下'];
+const SPIRIT_NAMES = ['树精','石灵','剑灵','火灵','水灵','风灵','雷灵','光灵','暗灵','花精','药灵','器灵','符灵','阵灵','傀灵','妖灵','魔灵','仙灵','神灵','圣灵'];
+const PET_ATK = [5,15,40,100,250,500,1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000,50000000];
+const SPIRIT_HP = [30,100,300,800,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000,20000000,50000000,100000000,500000000];
+const SPELL_DEFS = [{ id:'sword', name:'御剑术' }, { id:'flame', name:'烈焰诀' }, { id:'ice', name:'寒冰咒' }, { id:'shield', name:'金刚罩' }, { id:'wind', name:'疾风步' }, { id:'heal', name:'回春术' }];
+
+let db = null;
+let allPlayers = {};
+let selectedPlayer = null;
+
+function parseBigNum(str, fallback) {
+  if (str === null || str === undefined || str === '') return fallback;
+  str = String(str).trim().toLowerCase();
+  let num = Number(str);
+  if (!isNaN(num)) return num;
+  return 1.7e308;
+}
+
+function safeNum(v, fallback) { return (typeof v !== 'number' || !isFinite(v) || isNaN(v)) ? (fallback || 0) : v; }
+function fmt(v) { v = safeNum(v, 0); const abs = Math.abs(v); if (abs < 10000) return Math.floor(v).toString(); if (abs < 1e8) return (v/1e4).toFixed(2) + '万'; if (abs < 1e12) return (v/1e8).toFixed(2) + '亿'; if (abs < 1e16) return (v/1e12).toFixed(2) + '万亿'; return v.toExponential(2); }
+function escapeHtml(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+function errShow(msg) { document.getElementById('gateErr').innerText = msg; }
+
+function boot() {
+  const btn = document.getElementById('gateBtn'); const input = document.getElementById('pwdInput');
+  if (!btn || !input) return;
+  btn.onclick = () => { if (input.value === AUTHOR_PWD) { localStorage.setItem(AUTH_KEY, 'ok'); enterAdmin(); } else errShow('密钥错误'); };
+  if (localStorage.getItem(AUTH_KEY) === 'ok') enterAdmin();
+}
+
+function enterAdmin() {
+  document.getElementById('gateScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  if (!db) { const app2 = initializeApp(firebaseConfig); db = getDatabase(app2); }
+  
+  onValue(ref(db, 'game_players'), (snap) => {
+    allPlayers = snap.exists() ? snap.val() : {};
+    renderPlayerList();
+    if (selectedPlayer && allPlayers[selectedPlayer]) renderPlayerDetail(selectedPlayer, allPlayers[selectedPlayer]);
+  });
+}
+
+let pressTimer = null;
+function renderPlayerList() {
+  const el = document.getElementById('playerList'); el.innerHTML = '';
+  const ids = Object.keys(allPlayers);
+  if (ids.length === 0) { el.innerHTML = '<div style="color:#666;text-align:center;padding:20px;font-size:12px;">暂无玩家</div>'; return; }
+  ids.sort((a,b) => safeNum(allPlayers[b].lastActive,0) - safeNum(allPlayers[a].lastActive,0));
+  
+  ids.forEach(id => {
+    const p = allPlayers[id]; const div = document.createElement('div'); div.className = 'player-item';
+    if (id === selectedPlayer) div.style.background = 'rgba(255,215,0,0.15)';
+    div.innerHTML = `<div style="font-weight:bold;color:#fff;font-size:13px;">${escapeHtml(p.name||'无名')}</div><div style="font-size:11px;color:#888;margin-top:3px;">${REALM_NAMES[safeNum(p.realm,0)]||'炼气'} ${safeNum(p.realmLevel,1)}层 · Lv.${fmt(p.charLevel)}</div>`;
+    
+    div.onclick = () => { selectedPlayer = id; renderPlayerList(); renderPlayerDetail(id, p); };
+    
+    div.oncontextmenu = (e) => { e.preventDefault(); return false; };
+    div.addEventListener('touchstart', (e) => {
+      pressTimer = setTimeout(() => {
+        if(confirm(`☢️ 警告！长按触发销毁。确定要彻底抹除玩家【${p.name}】的全部数据吗？此操作不可逆！`)) {
+            destroyPlayerAccount(id, p.name);
+        }
+      }, 800);
+    });
+    div.addEventListener('touchend', () => clearTimeout(pressTimer));
+    div.addEventListener('touchmove', () => clearTimeout(pressTimer));
+    
+    el.appendChild(div);
+  });
+}
+
+window.destroyPlayerAccount = function(id, name) {
+  remove(ref(db, 'game_players/' + id)).then(() => {
+    get(ref(db, 'game_accounts')).then(snap => {
+      if(snap.exists()){
+        const accs = snap.val();
+        for(let key in accs){
+          if(accs[key].playerId === id || key === name){
+            remove(ref(db, 'game_accounts/' + key));
+          }
+        }
+      }
+    });
+    remove(ref(db, 'game_config/banned_players/' + id));
+    
+    if(selectedPlayer === id) { selectedPlayer = null; document.getElementById('playerDetail').innerHTML = ''; }
+    alert(`✅ 玩家【${name}】的所有数据已从服务器物理销毁。`);
+  });
+}
+
+function renderPlayerDetail(id, p) {
+  const el = document.getElementById('playerDetail');
+  
+  const spellsHtml = SPELL_DEFS.map(sp => {
+    const d = (p.spells && p.spells[sp.id]) || { level: 1, upgradeEnd: 0 };
+    const isUp = d.upgradeEnd > Date.now();
+    return `<div style="padding:8px;background:rgba(255,255,255,0.04);border-radius:8px;margin-bottom:6px;font-size:12px;">
+      <div><b style="color:#ffd700;">${sp.name}</b> Lv.${fmt(d.level)} ${isUp?`<span style="color:#00c6ff;">(升级中)</span>`:''}</div>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <button class="btn" style="margin:0;padding:6px;font-size:11px;" onclick="setSpellLevel('${id}','${sp.id}')">设等级</button>
+        ${isUp ? `<button class="btn btn-gold" style="margin:0;padding:6px;font-size:11px;" onclick="speedupSpell('${id}','${sp.id}')">加速</button>` : ''}
       </div>
-      <div class="input-area">
-        <div class="mode-select">
-          <label><input type="radio" name="sendMode" value="sys" checked> 系统公告</label>
-          <label><input type="radio" name="sendMode" value="ghost"> 作者隐身</label>
-          <label><input type="radio" name="sendMode" value="normal"> 作者普通</label>
+    </div>`;
+  }).join('');
+
+  const eqHtml = PART_KEYS.map(part => {
+    const eq = p.equipment && p.equipment[part];
+    if (!eq) return `<div style="padding:6px;background:rgba(255,255,255,0.03);border-radius:6px;font-size:11px;color:#666;">${PART_NAMES[part]}: 空</div>`;
+    return `<div style="padding:6px;background:rgba(255,255,255,0.03);border-radius:6px;font-size:11px;">
+      <div><b style="color:#ffd700;">${PART_NAMES[part]}</b> ${QUALITY_NAMES[eq.quality]||'未知'} ${eq.enhance?'+'+fmt(eq.enhance):''}</div>
+      <div style="color:#aaa;">攻${fmt(eq.atk)} 血${fmt(eq.hp)}</div>
+      <div style="display:flex;gap:4px;margin-top:4px;">
+        <button class="btn btn-gold" style="margin:0;padding:4px;font-size:10px;flex:1;" onclick="setEquipEnhance('${id}','${part}')">改强化</button>
+        <button class="btn btn-purple" style="margin:0;padding:4px;font-size:10px;flex:1;" onclick="setEquipStats('${id}','${part}')">改属性</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  let invHtml = '';
+  if (p.inventory && p.inventory.length > 0) {
+    invHtml = p.inventory.slice(0, 20).map((eq, idx) => {
+      return `<div style="padding:6px;background:rgba(255,255,255,0.03);border-radius:6px;font-size:11px;margin-bottom:4px;">
+        <div style="color:#888;">[背包] ${PART_NAMES[eq.part]||'未知'} - ${QUALITY_NAMES[eq.quality]||'未知'}</div>
+        <div style="color:#aaa;">攻${fmt(eq.atk)} 血${fmt(eq.hp)}</div>
+        <div style="display:flex;gap:4px;margin-top:4px;">
+          <button class="btn btn-gold" style="margin:0;padding:4px;font-size:10px;flex:1;" onclick="setInvEquipEnhance('${id}', ${idx})">改强化</button>
+          <button class="btn btn-purple" style="margin:0;padding:4px;font-size:10px;flex:1;" onclick="setInvEquipStats('${id}', ${idx})">改属性</button>
+          <button class="btn btn-red" style="margin:0;padding:4px;font-size:10px;flex:1;" onclick="deleteInvEquip('${id}', ${idx})">删除</button>
         </div>
-        <div class="input-row">
-          <input type="text" id="msgInput" placeholder="强制发言..." onkeypress="handleEnter(event)">
-          <button onclick="sendMsg()">发送</button>
-        </div>
+      </div>`;
+    }).join('');
+    if (p.inventory.length > 20) invHtml += `<div style="text-align:center;font-size:10px;color:#666;">...还有 ${p.inventory.length - 20} 件装备未展示</div>`;
+  } else {
+    invHtml = '<div style="color:#666;font-size:11px;">背包为空</div>';
+  }
+
+  el.innerHTML = `
+    <div class="card">
+      <div style="font-size:16px;font-weight:800;color:#ffd700;margin-bottom:8px;">${escapeHtml(p.name||'无名')}</div>
+      <div style="font-size:12px;color:#aaa;line-height:1.8;">
+        ID：${id}<br>Lv.${fmt(p.charLevel)} · 经验 ${fmt(p.exp)}<br>
+        境界 ${REALM_NAMES[safeNum(p.realm,0)]||'炼气'} ${safeNum(p.realmLevel,1)}层<br>
+        仙树 Lv.${fmt(p.treeLevel)} ${(p.treeUpgradeEnd>Date.now())?`(培育中)`:''}<br>
+        轮回 ${safeNum(p.reincarnateCount,0)} 次 | 天赋点 ${safeNum(p.talentPoints,0)}<br>
+        宗门 ${p.sect?p.sect.name:'无'} | 贡献 ${safeNum(p.sectPoints,0)}<br>
+        💎 仙玉 ${fmt(p.jade)} · 🍑 仙桃 ${fmt(p.peaches)}<br>
+        攻${fmt(p.atk)} 血${fmt(p.hp)}
       </div>
+      ${(p.treeUpgradeEnd > Date.now()) ? `<button class="btn btn-gold" style="margin-top:8px;" onclick="speedupTree('${id}')">⚡ 加速仙树</button>` : ''}
     </div>
     
-    <div id="usersView">
-      <h1 id="userManageTitle">正在管理</h1>
-      <div id="userManageContent"></div>
+    <div class="card">
+      <div class="card-title">✉️ 邮件系统 (可发所有物品)</div>
+      <button class="btn btn-blue" onclick="sendMail('${id}')">发送邮件给此玩家</button>
+      <button class="btn btn-gold" onclick="sendMail('all')">群发邮件给全服玩家</button>
     </div>
 
-    <div id="privateView">
-      <div id="pmChatList">
-        <div class="chat-header" style="background:rgba(0,0,0,0.8); border-bottom:1px solid #00c6ff; padding:15px;">
-          <span id="pmChatTitle" style="color:#00c6ff; font-weight:bold;">正在监控...</span>
-        </div>
-        <div class="chat-content" id="pmChatContent" style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:15px;"></div>
-        <div class="input-area" style="background:rgba(0,0,0,0.8); padding:15px; border-top:1px solid #333; display:flex; gap:10px;">
-          <input type="text" id="pmInput" placeholder="以[作者]身份强制插话..." onkeypress="handlePmEnter(event)" style="flex:1; padding:12px; border-radius:10px; border:1px solid #00c6ff; background:rgba(0,0,0,0.5); color:#fff; outline:none;">
-          <button onclick="sendPmMsg()" style="padding:0 20px; border-radius:10px; background:#00c6ff; color:#fff; border:none; font-weight:bold;">插话</button>
-        </div>
-      </div>
-      <div id="pmChatEmpty" style="flex:1; display:flex; justify-content:center; align-items:center; color:rgba(255,255,255,0.3); font-size:14px;">
-        点击左侧私聊房间查看记录
+    <div class="card">
+      <div class="card-title">🎁 发布特惠礼包</div>
+      <button class="btn btn-gold" onclick="createGiftPack()">发布新礼包</button>
+      <button class="btn btn-red" onclick="clearAllGifts()">🗑️ 清空所有礼包</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📦 发放物品</div>
+      <button class="btn btn-jade" onclick="sendJade('${id}')">💎 发放仙玉</button>
+      <button class="btn" onclick="sendPeaches('${id}')">🍑 发放仙桃</button>
+      <button class="btn" onclick="sendExp('${id}')">⭐ 发放经验</button>
+      <button class="btn btn-purple" onclick="sendTalent('${id}')">✨ 发放天赋点</button>
+      <button class="btn btn-green" onclick="sendSect('${id}')">🏯 发放宗门贡献</button>
+      <button class="btn" onclick="sendEquipment('${id}')">⚔️ 发放装备（选品质）</button>
+      <button class="btn btn-gold" onclick="sendPet('${id}')">🐾 发放灵兽</button>
+      <button class="btn btn-purple" onclick="sendSpirit('${id}')">👻 发放精怪</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🔧 修改核心数值</div>
+      <div class="grid2">
+        <button class="btn" onclick="setCharLevel('${id}')">改等级</button>
+        <button class="btn" onclick="setExp('${id}')">改经验</button>
+        <button class="btn" onclick="setTreeLevel('${id}')">改仙树等级</button>
+        <button class="btn" onclick="setJade('${id}')">改仙玉</button>
+        <button class="btn" onclick="setPeaches('${id}')">改仙桃</button>
+        <button class="btn btn-gold" onclick="setRealmSelect('${id}')">改境界</button>
+        <button class="btn" onclick="setAtk('${id}')">改攻击</button>
+        <button class="btn" onclick="setHp('${id}')">改气血</button>
+        <button class="btn" onclick="setReincarnate('${id}')">改轮回次数</button>
+        <button class="btn" onclick="setTalent('${id}')">改天赋点</button>
+        <button class="btn" onclick="setSectPoints('${id}')">改宗门贡献</button>
       </div>
     </div>
 
-  </div>
-
-  <div id="actionModal">
-    <div class="action-box">
-      <h3>对 <span id="modalTargetName" style="color:#0a84ff;"></span> 操作</h3>
-      
-      <button id="btnStartPM" style="background:linear-gradient(135deg,#00c6ff,#0072ff);color:#fff;border:none;font-weight:bold;display:none;">💬 发私信 / 加好友</button>
-      
-      <button id="btnSetAdmin" style="background:rgba(0,122,255,0.2);color:#0a84ff;border:1px solid rgba(0,122,255,0.4);">设为管理员</button>
-      <button id="btnMute" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);">禁言该用户</button>
-      
-      <button id="manualViolationBtn" onclick="manualViolation()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);font-weight:bold;display:none;">⚠️ 添加进违规</button>
-      
-      <button onclick="kickTarget()" style="background:rgba(255,59,48,0.2);color:#ff453a;border:1px solid rgba(255,59,48,0.4);">踢出群聊</button>
-      
-      <button class="btn-close" onclick="closeActionModal()">取消</button>
+    <div class="card">
+      <div class="card-title">⚔️ 身上穿戴的装备</div>
+      <div style="display:grid;gap:6px;">${eqHtml}</div>
     </div>
-  </div>
 
-  <div id="pullModal">
-    <div class="pull-box">
-      <h3>强制拉人进群</h3>
-      <p style="font-size:12px;color:#aaa;text-align:center;margin-bottom:10px;">勾选后点确认，用户刷新网页即可在群列表看到</p>
-      <div class="pull-list" id="pullUserList"></div>
-      <button onclick="confirmPull()" style="background:rgba(10,132,255,0.2);color:#0a84ff;border:1px solid rgba(10,132,255,0.4);font-weight:bold;">确认拉入</button>
-      <button class="btn-close" onclick="closePullModal()">取消</button>
+    <div class="card">
+      <div class="card-title">🎒 玩家背包装备</div>
+      <div style="display:grid;gap:6px;">${invHtml}</div>
     </div>
-  </div>
 
-  <div id="settingsModal">
-    <div class="modal-box">
-      <h3>群聊设置</h3>
-      
-      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(255,59,48,0.1); padding:12px; border-radius:14px; border:1px solid rgba(255,59,48,0.3); margin-bottom:15px;">
-        <div style="font-size:14px; font-weight:bold; color:#ff453a;">🚫 全员禁言</div>
-        <input type="checkbox" id="muteAllToggle" onchange="toggleMuteAll(event)" style="width:20px; height:20px; accent-color:#ff3b30; cursor:pointer;">
-      </div>
-
-      <div style="background:rgba(0,0,0,0.4);padding:10px;border-radius:14px;margin-bottom:15px;text-align:center;font-size:14px;border:1px solid rgba(255,255,255,0.05);">
-        群号：<strong id="displayGroupId" style="color:#00c6ff;font-size:18px;text-shadow:0 0 10px rgba(0,198,255,0.5);"></strong>
-        <button onclick="copyGroupId()" style="width:auto;padding:5px 10px;margin:5px auto 0;display:block;background:rgba(0,122,255,0.2);color:#0a84ff;font-size:12px;border-radius:6px;border:1px solid rgba(0,122,255,0.3);">一键复制</button>
-      </div>
-      <div class="member-list">
-        <h4 style="margin-bottom:10px;color:#fff;font-size:15px;text-align:left;">群成员管理</h4>
-        <div id="memberList"></div>
-      </div>
-      
-      <button onclick="clearGroupChat()" style="background:rgba(255,149,0,0.2);color:#ff9500;border:1px solid rgba(255,149,0,0.4);margin-top:20px;">🧹 清空本群聊天记录</button>
-      <button class="btn-close" onclick="closeSettings()" style="margin-top:10px;">关闭</button>
+    <div class="card">
+      <div class="card-title">📖 仙术管理</div>
+      ${spellsHtml}
     </div>
-  </div>
+
+    <div class="card">
+      <div class="card-title">🔨 玩家管理</div>
+      <button class="btn btn-red" onclick="banPlayer('${id}')">🚫 封禁</button>
+      <button class="btn btn-green" onclick="unbanPlayer('${id}')">✅ 解封</button>
+      <button class="btn btn-red" onclick="deletePlayer('${id}')">☢️ 删除存档</button>
+    </div>
+  `;
+}
+
+// ===== 邮件功能（包含全物品/装备/进阶） =====
+window.sendMail = function(targetId) {
+  const targetName = targetId === 'all' ? '全服玩家' : (allPlayers[targetId] ? allPlayers[targetId].name : '该玩家');
+  
+  let baseResourcesHtml = `
+    <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;">
+      <div style="font-size:12px;color:#fff;margin-bottom:4px;">💎 仙玉</div>
+      <input id="mail_jade" type="text" placeholder="数量" style="width:100%;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+    </div>
+    <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;">
+      <div style="font-size:12px;color:#fff;margin-bottom:4px;">🍑 仙桃</div>
+      <input id="mail_peaches" type="text" placeholder="数量" style="width:100%;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+    </div>
+    <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;">
+      <div style="font-size:12px;color:#fff;margin-bottom:4px;">⭐ 经验</div>
+      <input id="mail_exp" type="text" placeholder="数量" style="width:100%;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+    </div>
+    <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;">
+      <div style="font-size:12px;color:#fff;margin-bottom:4px;">✨ 天赋点</div>
+      <input id="mail_talentPoints" type="text" placeholder="数量" style="width:100%;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+    </div>
+    <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;">
+      <div style="font-size:12px;color:#fff;margin-bottom:4px;">🏯 宗门贡献</div>
+      <input id="mail_sectPoints" type="text" placeholder="数量" style="width:100%;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+    </div>
+  `;
+
+  let qualityOpts = QUALITY_NAMES.map((q, i) => `<option value="${i}">${i}阶 - ${q}</option>`).join('');
+  let equipHtml = `
+    <div style="background:rgba(255,215,0,0.1);padding:8px;border-radius:6px;grid-column: span 2;">
+      <div style="font-size:12px;color:#ffd700;margin-bottom:4px;">⚔️ 极品装备 (选品质发1件)</div>
+      <select id="mail_equip_quality" style="width:100%;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+        <option value="-1">不发放装备</option>
+        ${qualityOpts}
+      </select>
+    </div>
+  `;
+
+  let petHtml = `
+    <div style="background:rgba(255,0,255,0.1);padding:8px;border-radius:6px;grid-column: span 2;">
+      <div style="font-size:12px;color:#ff00ff;margin-bottom:4px;">🐾 灵兽盲盒 / 👻 精怪盲盒</div>
+      <div style="display:flex;gap:10px;">
+        <input id="mail_pet" type="text" placeholder="灵兽数量" style="flex:1;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+        <input id="mail_spirit" type="text" placeholder="精怪数量" style="flex:1;padding:6px;border-radius:4px;background:#222;color:#fff;border:1px solid #444;">
+      </div>
+    </div>
+  `;
+
+  const html = `
+    <div style="display:flex; flex-direction:column; gap:10px; max-height: 60vh; overflow-y: auto;">
+      <div style="font-size:12px;color:#ffd700;text-align:center;margin-bottom:5px;">收件人：${targetName}</div>
+      <input id="mail_title" type="text" value="系统补偿" placeholder="邮件标题" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      <input id="mail_content" type="text" value="请查收您的奖励。" placeholder="邮件内容" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      
+      <div style="font-size:13px;color:#00c6ff;margin-top:5px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:5px;">全物品自选附件</div>
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        ${baseResourcesHtml}
+        ${equipHtml}
+        ${petHtml}
+      </div>
+      
+      <button class="btn btn-green" style="margin-top:10px;padding:12px;font-size:16px;" onclick="confirmSendMail('${targetId}')">确认发送</button>
+    </div>
+  `;
+
+  document.getElementById('selectModalTitle').innerText = "发送邮件";
+  document.getElementById('selectModalContent').innerHTML = html;
+  document.getElementById('selectModal').style.display = 'flex';
+};
+
+window.confirmSendMail = async function(targetId) {
+  const title = document.getElementById('mail_title').value || '系统邮件';
+  const content = document.getElementById('mail_content').value || '请查收附件奖励。';
+  let attachments = {};
+  
+  const jade = parseBigNum(document.getElementById('mail_jade').value, 0); if (jade > 0) attachments.jade = jade;
+  const peaches = parseBigNum(document.getElementById('mail_peaches').value, 0); if (peaches > 0) attachments.peaches = peaches;
+  const exp = parseBigNum(document.getElementById('mail_exp').value, 0); if (exp > 0) attachments.exp = exp;
+  const talent = parseBigNum(document.getElementById('mail_talentPoints').value, 0); if (talent > 0) attachments.talentPoints = talent;
+  const sectPoints = parseBigNum(document.getElementById('mail_sectPoints').value, 0); if (sectPoints > 0) attachments.sectPoints = sectPoints;
+  
+  const pet = parseBigNum(document.getElementById('mail_pet').value, 0); if (pet > 0) attachments.pet = pet;
+  const spirit = parseBigNum(document.getElementById('mail_spirit').value, 0); if (spirit > 0) attachments.spirit = spirit;
+  
+  const equipQuality = parseInt(document.getElementById('mail_equip_quality').value);
+  if (equipQuality >= 0) attachments.equipment = { quality: equipQuality };
+
+  if (Object.keys(attachments).length === 0) return alert("请至少填写一种附件！");
+
+  const mailData = { title, content, attachments, time: Date.now(), claimed: false };
+
+  if (targetId === 'all') {
+    if(!confirm("⚠️ 确定要全服群发此邮件吗？")) return;
+    get(ref(db, 'game_players')).then(snap => {
+      if(snap.exists()){
+        const players = snap.val();
+        let count = 0;
+        for(let pid in players){ push(ref(db, `game_players/${pid}/mail`), mailData); count++; }
+        alert(`✅ 全服邮件发送成功！共发送给 ${count} 名玩家。`);
+        document.getElementById('selectModal').style.display = 'none';
+      }
+    });
+  } else {
+    push(ref(db, `game_players/${targetId}/mail`), mailData).then(() => {
+      alert("✅ 邮件发送成功！");
+      document.getElementById('selectModal').style.display = 'none';
+    });
+  }
+};
+
+window.openSelectionModal = function(title, items, onSelectCallback) {
+  document.getElementById('selectModalTitle').innerText = title;
+  const el = document.getElementById('selectModalContent'); el.innerHTML = '';
+  items.forEach(item => {
+    const div = document.createElement('div'); div.className = 'list-item';
+    div.innerHTML = `<span>${item.label}</span><span style="color:#00c6ff;">${item.sub || ''}</span>`;
+    div.onclick = () => {
+      onSelectCallback(item.value);
+      document.getElementById('selectModal').style.display = 'none';
+    };
+    el.appendChild(div);
+  });
+  document.getElementById('selectModal').style.display = 'flex';
+};
+
+window.setRealmSelect = function(id) {
+  const items = REALM_NAMES.map((name, idx) => ({ label: `第 ${idx+1} 境 - ${name}`, value: idx }));
+  openSelectionModal("选择要设置的大境界", items, (val) => {
+    set(ref(db, 'game_players/'+id), { ...allPlayers[id], realm: val, realmLevel: 1 }).then(() => { alert('境界修改成功！'); renderPlayerDetail(id, allPlayers[id]); });
+  });
+};
+
+window.sendJade = (id) => { const n = parseBigNum(prompt('发放仙玉:', '10'), null); if(n !== null) push(ref(db, 'game_players/'+id+'/inbox'), { type:'jade', payload:{amount:n}, claimed:false }).then(()=>alert('✅ 仙玉已发送到玩家信箱')); };
+window.sendPeaches = (id) => { const n = parseBigNum(prompt('发放仙桃:', '1000'), null); if(n !== null) push(ref(db, 'game_players/'+id+'/inbox'), { type:'peaches', payload:{amount:n}, claimed:false }).then(()=>alert('✅ 仙桃已发送到玩家信箱')); };
+window.sendExp = (id) => { const n = parseBigNum(prompt('发放经验:', '1000'), null); if(n !== null) push(ref(db, 'game_players/'+id+'/inbox'), { type:'exp', payload:{amount:n}, claimed:false }).then(()=>alert('✅ 经验已发送到玩家信箱')); };
+window.sendTalent = (id) => { const n = parseBigNum(prompt('天赋点:', '10'), null); if(n !== null) push(ref(db, 'game_players/'+id+'/inbox'), { type:'talentPoints', payload:{amount:n}, claimed:false }).then(()=>alert('✅ 天赋点已发送')); };
+window.sendSect = (id) => { const n = parseBigNum(prompt('宗门贡献:', '100'), null); if(n !== null) push(ref(db, 'game_players/'+id+'/inbox'), { type:'sectPoints', payload:{amount:n}, claimed:false }).then(()=>alert('✅ 贡献已发送')); };
+
+window.sendEquipment = function(id) {
+  const items = QUALITY_NAMES.map((name, idx) => ({ label: `第 ${idx} 阶 - ${name}`, value: idx }));
+  openSelectionModal("选择要发放的装备品质", items, (q) => {
+    const part = prompt("输入部位(weapon/helmet/armor/boots/ring/necklace/belt/artifact):", "weapon");
+    if (!PART_KEYS.includes(part)) return alert('部位错误');
+    push(ref(db, 'game_players/'+id+'/inbox'), { type:'equipment', payload:{ equipment:{ id:'EQ-'+Date.now(), part, quality:parseInt(q), atk:100*(q+1), hp:200*(q+1), critRate:0, critDmg:0, enhance:0 } }, claimed:false }).then(() => alert('装备已发放！'));
+  });
+};
+
+window.sendPet = function(id) {
+  const items = PET_NAMES.map((name, idx) => ({ label: name, sub: `攻击 +${fmt(PET_ATK[idx])}`, value: idx }));
+  openSelectionModal("选择要发放的灵兽", items, (val) => {
+    push(ref(db, 'game_players/'+id+'/inbox'), { type:'pet', payload:{petId:val}, claimed:false }).then(() => alert('灵兽已发放！'));
+  });
+};
+
+window.sendSpirit = function(id) {
+  const items = SPIRIT_NAMES.map((name, idx) => ({ label: name, sub: `气血 +${fmt(SPIRIT_HP[idx])}`, value: idx }));
+  openSelectionModal("选择要发放的精怪", items, (val) => {
+    push(ref(db, 'game_players/'+id+'/inbox'), { type:'spirit', payload:{spiritId:val}, claimed:false }).then(() => alert('精怪已发放！'));
+  });
+};
+
+window.createGiftPack = async function() {
+  const name = prompt("请输入礼包名称（如：特惠大礼包）：", "特惠大礼包");
+  if (!name) return;
+  let items = [];
+  let adding = true;
+  while (adding) {
+    const type = prompt("添加物品类型：\n1. 仙桃\n2. 仙玉\n3. 装备\n4. 经验\n5. 结束添加", "1");
+    if (type === '5' || type === null) { adding = false; break; }
+    let itemData = { type: '' };
+    if (type === '1') { itemData.type = 'peaches'; itemData.amount = parseBigNum(prompt("数量:", "10000"), 0); }
+    else if (type === '2') { itemData.type = 'jade'; itemData.amount = parseBigNum(prompt("数量:", "100"), 0); }
+    else if (type === '3') { itemData.type = 'equipment'; const part = prompt("部位:", "weapon"); const q = parseInt(prompt("品质 0-106:", "10")) || 0; itemData.eq = { id: 'EQ-GIFT-' + Date.now() + Math.random(), part, quality: q, atk: 1000*(q+1), hp: 2000*(q+1), critRate: 0.05, critDmg: 0.5, enhance: 0 }; }
+    else if (type === '4') { itemData.type = 'exp'; itemData.amount = parseBigNum(prompt("经验数量:", "100000"), 0); }
+    else continue;
+    items.push(itemData);
+    alert("已添加：" + itemData.type);
+  }
+  if (items.length === 0) return alert("未添加任何物品");
+  const priceStr = prompt("请输入价格（例如 10t 代表10仙玉，500d 代表500仙桃）：", "10t");
+  if (!priceStr) return;
+  let cost = 0; let currency = 'jade';
+  if (priceStr.endsWith('t')) { cost = parseFloat(priceStr.slice(0, -1)); currency = 'jade'; }
+  else if (priceStr.endsWith('d')) { cost = parseFloat(priceStr.slice(0, -1)); currency = 'peaches'; }
+  else { alert("格式错误，需以 t 或 d 结尾"); return; }
+  if (isNaN(cost)) return alert("价格错误");
+  push(ref(db, 'game_gifts'), { name, items, cost, currency, createdAt: Date.now() }).then(() => alert("✅ 礼包发布成功！"));
+};
+window.clearAllGifts = function() { if (confirm("确定清空所有特惠礼包吗？")) remove(ref(db, 'game_gifts')).then(() => alert("已清空")); };
+
+window.setCharLevel = (id) => { const v = parseBigNum(prompt('等级:', '100'), null); if(v !== null) update(ref(db, 'game_players/'+id), { charLevel: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setExp = (id) => { const v = parseBigNum(prompt('经验:', '0'), null); if(v !== null) update(ref(db, 'game_players/'+id), { exp: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setTreeLevel = (id) => { const v = parseBigNum(prompt('仙树等级:', '1'), null); if(v !== null) update(ref(db, 'game_players/'+id), { treeLevel: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setJade = (id) => { const v = parseBigNum(prompt('仙玉:', '10000'), null); if(v !== null) update(ref(db, 'game_players/'+id), { jade: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setPeaches = (id) => { const v = parseBigNum(prompt('仙桃:', '100000'), null); if(v !== null) update(ref(db, 'game_players/'+id), { peaches: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setAtk = (id) => { const v = parseBigNum(prompt('攻击:', '10000'), null); if(v !== null) update(ref(db, 'game_players/'+id), { atk: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setHp = (id) => { const v = parseBigNum(prompt('气血:', '10000'), null); if(v !== null) update(ref(db, 'game_players/'+id), { hp: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setReincarnate = (id) => { const v = parseBigNum(prompt('轮回次数:', '0'), null); if(v !== null) update(ref(db, 'game_players/'+id), { reincarnateCount: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setTalent = (id) => { const v = parseBigNum(prompt('天赋点:', '0'), null); if(v !== null) update(ref(db, 'game_players/'+id), { talentPoints: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.setSectPoints = (id) => { const v = parseBigNum(prompt('宗门贡献:', '0'), null); if(v !== null) update(ref(db, 'game_players/'+id), { sectPoints: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+
+window.setEquipEnhance = (id, part) => { 
+  const v = parseBigNum(prompt('强化等级:', '0'), null); 
+  if(v !== null) {
+    const newEq = { ...allPlayers[id].equipment[part], enhance: v };
+    set(ref(db, 'game_players/'+id+'/equipment/'+part), newEq).then(()=>{ alert('强化等级已修改！'); renderPlayerDetail(id, allPlayers[id]); });
+  } 
+};
+
+window.setEquipStats = (id, part) => {
+  const eq = allPlayers[id].equipment[part];
+  const html = `
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <input id="m_atk" type="text" placeholder="攻击力 (当前:${fmt(eq.atk)})" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      <input id="m_hp" type="text" placeholder="气血 (当前:${fmt(eq.hp)})" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      <input id="m_q" type="number" placeholder="品质 (0-106, 当前:${eq.quality})" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      <button class="btn btn-green" onclick="confirmEquipStats('${id}', '${part}')">确认修改</button>
+    </div>
+  `;
+  document.getElementById('selectModalTitle').innerText = "修改装备属性";
+  document.getElementById('selectModalContent').innerHTML = html;
+  document.getElementById('selectModal').style.display = 'flex';
+};
+
+window.confirmEquipStats = function(id, part) {
+  const a = parseBigNum(document.getElementById('m_atk').value, allPlayers[id].equipment[part].atk);
+  const h = parseBigNum(document.getElementById('m_hp').value, allPlayers[id].equipment[part].hp);
+  const q = parseInt(document.getElementById('m_q').value) || allPlayers[id].equipment[part].quality;
+  const newEq = { ...allPlayers[id].equipment[part], atk: a, hp: h, quality: q };
+  set(ref(db, 'game_players/'+id+'/equipment/'+part), newEq).then(()=>{
+    document.getElementById('selectModal').style.display = 'none'; alert('装备属性已成功修改！'); renderPlayerDetail(id, allPlayers[id]);
+  });
+};
+
+window.setInvEquipEnhance = (id, idx) => { 
+  const v = parseBigNum(prompt('强化等级:', '0'), null); 
+  if(v !== null) {
+    const newEq = { ...allPlayers[id].inventory[idx], enhance: v };
+    set(ref(db, 'game_players/'+id+'/inventory/'+idx), newEq).then(()=>{ alert('强化已修改！'); renderPlayerDetail(id, allPlayers[id]); });
+  } 
+};
+
+window.setInvEquipStats = function(id, idx) {
+  const eq = allPlayers[id].inventory[idx];
+  const html = `
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <input id="m_atk" type="text" placeholder="攻击力 (当前:${fmt(eq.atk)})" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      <input id="m_hp" type="text" placeholder="气血 (当前:${fmt(eq.hp)})" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      <input id="m_q" type="number" placeholder="品质 (0-106, 当前:${eq.quality})" style="padding:10px;border-radius:8px;border:none;background:rgba(255,255,255,0.1);color:#fff;">
+      <button class="btn btn-green" onclick="confirmInvEquipStats('${id}', ${idx})">确认修改</button>
+    </div>
+  `;
+  document.getElementById('selectModalTitle').innerText = "修改背包装备";
+  document.getElementById('selectModalContent').innerHTML = html;
+  document.getElementById('selectModal').style.display = 'flex';
+};
+
+window.confirmInvEquipStats = function(id, idx) {
+  const eq = allPlayers[id].inventory[idx];
+  const a = parseBigNum(document.getElementById('m_atk').value, eq.atk);
+  const h = parseBigNum(document.getElementById('m_hp').value, eq.hp);
+  const q = parseInt(document.getElementById('m_q').value) || eq.quality;
+  const newEq = { ...eq, atk: a, hp: h, quality: q };
+  set(ref(db, 'game_players/'+id+'/inventory/'+idx), newEq).then(()=>{
+    document.getElementById('selectModal').style.display = 'none'; alert('装备属性已成功修改！'); renderPlayerDetail(id, allPlayers[id]);
+  });
+};
+
+window.deleteInvEquip = (id, idx) => { if(confirm('确定删除这件装备吗？')) remove(ref(db, 'game_players/'+id+'/inventory/'+idx)).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+
+window.setSpellLevel = (id, spellId) => { const v = parseBigNum(prompt('仙术等级:', '1'), null); if(v !== null) update(ref(db, 'game_players/'+id+'/spells/'+spellId), { level: v }).then(()=>renderPlayerDetail(id, allPlayers[id])); };
+window.speedupSpell = (id, spellId) => { update(ref(db, 'game_players/'+id+'/spells/'+spellId), { upgradeEnd: 0 }); alert('已加速'); };
+window.speedupTree = (id) => { update(ref(db, 'game_players/'+id), { treeUpgradeEnd: Date.now() - 1000 }); alert('已加速'); };
+
+window.banPlayer = (id) => { const reason = prompt('封禁原因:', '违规'); if(reason) set(ref(db, 'game_config/banned_players/'+id), { reason, time: Date.now() }).then(() => alert('已封禁')); };
+window.unbanPlayer = (id) => { remove(ref(db, 'game_config/banned_players/'+id)).then(() => alert('已解封')); };
+window.deletePlayer = (id) => { if(confirm('☢️ 确定删除该玩家全部存档？不可恢复！')) remove(ref(db, 'game_players/'+id)).then(() => { selectedPlayer = null; document.getElementById('playerDetail').innerHTML = ''; alert('已删除'); }); };
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+</script>
 </body>
 </html>
